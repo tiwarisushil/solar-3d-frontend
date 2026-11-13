@@ -1,0 +1,49 @@
+'use client';
+
+import { useRouter } from 'next/navigation';
+import { useEffect } from 'react';
+import { homeFor, useSession } from '@/lib/session';
+import { applyTheme, clearTheme } from '@/lib/theme';
+import { FullPageLoader } from '../kit';
+import NoAccess from './NoAccess';
+
+/**
+ * Renders children only for a signed-in user whose role is `role` (a string, or an array to allow
+ * more than one — e.g. a page both the company owner and its staff can open). When `permission` is
+ * given, a non-company role must also hold that staff permission; the company owner is never checked
+ * against it (they always have full access). Someone in the wrong role is sent to their own home; a staff member
+ * without the permission sees the No access panel saying what's missing.
+ */
+export default function AuthGuard({ role, permission, children }) {
+  const router = useRouter();
+  const { status, user, company, init } = useSession();
+  const roles = Array.isArray(role) ? role : [role];
+  const roleOk = status === 'ready' && roles.includes(user.role);
+  const denied = roleOk && permission && user.role !== 'company' && user.role !== 'branch' && !user.permissions?.includes(permission);
+
+  useEffect(() => {
+    init();
+  }, [init]);
+
+  useEffect(() => {
+    if (status === 'guest') router.replace('/login');
+    else if (status === 'ready' && !roleOk) router.replace(homeFor(user.role));
+  }, [status, user, roleOk, router]);
+
+  // company and agent workspaces wear the company's colours
+  const primary = company?.theme?.primary;
+  const accent = company?.theme?.accent;
+  useEffect(() => {
+    if (roles.includes('superadmin') || !primary) return undefined;
+    applyTheme({ primary, accent });
+    return clearTheme;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [role, primary, accent]);
+
+  if (status !== 'ready' || !roleOk) return <FullPageLoader />;
+  if (denied) {
+    const [area, action] = permission.split(':');
+    return <NoAccess area={area} action={action} />;
+  }
+  return children;
+}

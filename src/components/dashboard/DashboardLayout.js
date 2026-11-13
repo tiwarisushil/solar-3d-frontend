@@ -1,0 +1,52 @@
+'use client';
+
+import { BadgeIndianRupee, Boxes, Calculator, CalendarClock, Truck, Headset, SlidersHorizontal, HardHat, Landmark, LayoutDashboard, WalletCards, Megaphone, PanelsTopLeft, PenTool, Receipt, Settings, UserCog, Users } from 'lucide-react';
+import { useMemo } from 'react';
+import AppShell from '../layout/AppShell';
+import AuthGuard from '../layout/AuthGuard';
+import { useSession } from '@/lib/session';
+import { isBranchOwner } from '@/lib/tenant';
+
+const NAV_BASE = [
+  {
+    items: [
+      { href: '/dashboard', label: 'Overview', icon: LayoutDashboard, exact: true },
+      { href: '/dashboard/leads', label: 'Leads', icon: Megaphone }, // the sources are tabs inside the page (LeadSourceTabs)
+      { href: '/dashboard/clients', label: 'Clients', icon: Users },
+      { href: '/dashboard/designs', label: 'Proposals', icon: PenTool },
+      { href: '/dashboard/billing', label: 'Billing & Receipts', icon: Receipt },
+      { href: '/dashboard/loans', label: 'Loans', icon: Landmark },
+      { href: '/dashboard/subsidies', label: 'Subsidies', icon: BadgeIndianRupee },
+      { href: '/dashboard/estimation', label: 'Estimation', icon: Calculator },
+      { href: '/dashboard/expenses', label: 'Expenses', icon: WalletCards },
+      { href: '/dashboard/installations', label: 'Task Management', icon: HardHat },
+      { href: '/dashboard/amc', label: 'AMC tracker', icon: CalendarClock },
+      { href: '/dashboard/client-support', label: 'Client support', icon: Headset },
+    ],
+  },
+  {
+    title: 'Company',
+    items: [
+      { href: '/dashboard/team', label: 'Staff Management', icon: UserCog },
+      { href: '/dashboard/catalog', label: 'Inventory', icon: PanelsTopLeft },
+      { href: '/dashboard/packages', label: 'Packages', icon: Boxes },
+      { href: '/dashboard/suppliers', label: 'Suppliers', icon: Truck },
+      { href: '/dashboard/masters', label: 'Manage Masters', icon: SlidersHorizontal, branchOnly: true },
+      { href: '/dashboard/settings', label: 'Settings', icon: Settings },
+    ],
+  },
+];
+
+export default function DashboardLayout({ children }) {
+  const role = useSession((s) => s.user?.role);
+  const nav = useMemo(() => NAV_BASE.map((group) => ({
+    ...group,
+    items: group.items.filter((item) => !item.branchOnly || isBranchOwner({ role })),
+  })), [role]);
+
+  return (
+    <AuthGuard role={['branch', 'company']}>
+      <AppShell nav={nav} workspace={role === 'branch' ? '' : 'Branch workspace'}>{children}</AppShell>
+    </AuthGuard>
+  );
+}

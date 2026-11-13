@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#1d4ed8" />
+  <title>Offline · SolarDesy</title>
+  <style>
+    :root { color-scheme: light; }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; margin: 0; }
+    body {
+      display: grid;
+      place-items: center;
+      padding:
+        calc(1.5rem + env(safe-area-inset-top))
+        calc(1.25rem + env(safe-area-inset-right))
+        calc(1.5rem + env(safe-area-inset-bottom))
+        calc(1.25rem + env(safe-area-inset-left));
+      background: #f4f6f9;
+      color: #0f172a;
+      font: 16px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+    }
+    main {
+      width: min(28rem, 100%);
+      text-align: center;
+    }
+    img {
+      width: 4rem;
+      height: 4rem;
+      border-radius: 1rem;
+    }
+    h1 {
+      margin: 1.25rem 0 0.5rem;
+      font-size: clamp(1.35rem, 4vw, 1.75rem);
+      letter-spacing: -0.03em;
+      line-height: 1.15;
+    }
+    p { margin: 0; color: #475569; }
+    button {
+      margin-top: 1.5rem;
+      height: 2.75rem;
+      padding: 0 1.25rem;
+      border: 0;
+      border-radius: 0.75rem;
+      background: #1d4ed8;
+      color: #fff;
+      font: inherit;
+      font-size: 0.95rem;
+      font-weight: 650;
+      cursor: pointer;
+    }
+    button:hover { background: #1e40af; }
+    button:focus-visible { outline: 2px solid #1d4ed8; outline-offset: 3px; }
+  </style>
+</head>
+<body>
+  <main>
+    <img src="/icons/icon-192.png" alt="" width="64" height="64" />
+    <h1>You are offline</h1>
+    <p>SolarDesy needs a connection to open your workspace. Reconnect, then try again. Anything you already saved is still there.</p>
+    <button type="button" onclick="location.reload()">Try again</button>
+  </main>
+</body>
+</html>

@@ -1,0 +1,407 @@
+'use client';
+
+import { AlertCircle, ArrowRight, Check, Save, ChevronDown, ChevronLeft, CloudOff, Download, Eye, FileText, Loader2, QrCode, Redo2, Undo2 } from 'lucide-react';
+import { historyKeys, redo, startHistory, undo, useHistory } from '@/lib/history';
+import { clipboardKeys } from '@/lib/clipboard';
+import WhatsAppIcon from './icons/WhatsAppIcon';
+import dynamic from 'next/dynamic';
+import Link from 'next/link';
+import { useRouter } from 'next/navigation';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { api, assetUrl } from '@/lib/api';
+import { generatePdf } from '@/lib/pdf';
+import { archiveProposalPdfAndShareOnWhatsApp } from '@/lib/proposalWhatsApp';
+import { RETURN_PAGE_KEY } from './RouteTracker';
+import { can } from '@/lib/permissions';
+import { useSession } from '@/lib/session';
+import { useMapToken } from '@/lib/staticMap';
+import { isFullProposal, PDF_PAGES } from '@/lib/pdfPages';
+import { PRO_SLUGS, SIMPLE_SLUGS, SIMPLE_STEPS, useStore } from '@/lib/store';
+import { pricingFrom3D } from '@/lib/pricing';
+import { useDesign } from '@/lib/useDesign';
+import { useDesignSync } from '@/lib/useDesignSync';
+import { useResource } from '@/lib/useResource';
+import { commitMarkedAreas, useMarkedRoofs } from '@/lib/solarModel';
+import { FullPageLoader, LogoChip, Toaster, buttonClass, toast } from './kit';
+import CoverPicker from './kit/CoverPicker';
+import ClientChangeRequestPanel from './dashboard/ClientChangeRequestPanel';
+import ShareModal from './dashboard/ShareModal';
+import { sceneApi } from './scene/Scene3D';
+import StepDraw from './steps/StepDraw';
+import StepElectrical from './steps/StepElectrical';
+import StepFinancials from './steps/StepFinancials';
+import StepLocation from './steps/StepLocation';
+import StepManualEdit from './steps/StepManualEdit';
+import StepObstructions from './steps/StepObstructions';
+import StepPanelConfig from './steps/StepPanelConfig';
+import StepReport from './steps/StepReport';
+import StepRoofDetails from './steps/StepRoofDetails';
+import { cx } from './ui';
+
+const StepSimpleDesign = dynamic(() => import('./steps/StepSimpleDesign'), { ssr: false });
+const Step3D = dynamic(() => import('./steps/Step3D'), { ssr: false });
+
+export function useSolar() {
+  const origin = useStore((s) => s.origin);
+  const patch = useStore((s) => s.patch);
+  useEffect(() => {
+    if (!origin) return undefined;
+    const ctrl = new AbortController();
+    patch('solar', { status: 'loading', error: null });
+    api(`/api/solar?lat=${origin.lat}&lng=${origin.lng}`, { signal: ctrl.signal })
+      .then((body) => patch('solar', { status: 'ok', data: body }))
+      .catch((e) => !ctrl.signal.aborted && patch('solar', { status: 'error', data: null, error: e.message }));
+    return () => ctrl.abort();
+  }, [origin, patch]);
+}
+
+/** The company's own panels, poles and pricing — applied once the design itself has loaded.
+ * Catalog and packages are fetched from separate endpoints and merged into one store value. */
+export function useCatalog(ready, companyId) {
+  const set = useStore((s) => s.set);
+  useEffect(() => {
+    if (!ready || !companyId) return;
+    Promise.all([
+      api('/api/catalog'),
+      api('/api/packages').catch(() => []),
+    ]).then(([catalog, packages]) => {
+        const st = useStore.getState();
+        const finance =
+          st.finance.currency === catalog.currency &&
+          st.finance.tariff === catalog.tariff &&
+          st.finance.init
+            ? st.finance
+            : { ...st.finance, currency: catalog.currency, tariff: catalog.tariff, init: true };
+        set({ catalog: { ...catalog, packages }, finance });
+      })
+      .catch(() => {});
+  }, [set, ready, companyId]);
+}
+
+
+/** Undo / redo buttons in the header (the keys work everywhere in the designer). */
+function UndoRedo() {
+  const { canUndo, canRedo } = useHistory();
+  const mac = typeof navigator !== 'undefined' && /mac/i.test(navigator.platform || navigator.userAgent);
+  const btn = 'grid h-8 w-8 place-items-center rounded-md text-slate-600 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-35';
+  return (
+    <div className="flex items-center gap-0.5" role="group" aria-label="Undo and redo">
+      <button type="button" className={btn} disabled={!canUndo} onClick={undo} title={`Undo (${mac ? '⌘' : 'Ctrl'}+Z)`} aria-label="Undo"><Undo2 className="h-4 w-4" /></button>
+      <button type="button" className={btn} disabled={!canRedo} onClick={redo} title={`Redo (${mac ? '⌘+Shift' : 'Ctrl+Shift'}+Z)`} aria-label="Redo"><Redo2 className="h-4 w-4" /></button>
+    </div>
+  );
+}
+
+/** Header "Actions" dropdown: download the proposal, run the shadow report. */
+function ActionsMenu({ items, busy }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef(null);
+  useEffect(() => {
+    if (!open) return undefined;
+    const close = (e) => {
+      if (e.type === 'keydown' ? e.key === 'Escape' : !ref.current?.contains(e.target)) setOpen(false);
+    };
+    window.addEventListener('pointerdown', close);
+    window.addEventListener('keydown', close);
+    return () => {
+      window.removeEventListener('pointerdown', close);
+      window.removeEventListener('keydown', close);
+    };
+  }, [open]);
+  return (
+    <div ref={ref} className="relative ml-auto shrink-0 md:ml-0">
+      <button type="button" aria-haspopup="menu" aria-expanded={open} onClick={() => setOpen((v) => !v)} className="inline-flex h-9 items-center gap-2 rounded-md bg-brand px-3.5 text-sm font-semibold text-brand-fg hover:bg-brand-600">
+        {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
+        <span className="hidden sm:inline">Export</span>
+        <ChevronDown className={cx('h-4 w-4 transition', open && 'rotate-180')} />
+      </button>
+      {open && (
+        <div role="menu" className="absolute right-0 top-11 z-50 w-64 overflow-hidden rounded-lg border border-slate-200 bg-white py-1 shadow-xl">
+          {items.map(({ key, icon: Icon, label, hint, disabled, onClick }) => (
+            <button
+              key={key}
+              type="button"
+              role="menuitem"
+              disabled={disabled}
+              onClick={() => {
+                setOpen(false);
+                onClick();
+              }}
+              className="flex w-full items-start gap-3 px-3 py-2.5 text-left hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <Icon className="mt-0.5 h-4 w-4 shrink-0 text-brand" />
+              <span>
+                <span className="block text-sm font-medium text-slate-800">{label}</span>
+                <span className="block text-xs text-slate-500">{hint}</span>
+              </span>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+const SAVE_LABEL = { saved: 'All changes saved', dirty: 'Saving…', saving: 'Saving…', error: 'Not saved — retrying on next change', readonly: 'View only — changes aren’t saved' };
+
+// the design screen, one part of it per step (see StepSimpleDesign's `stage`)
+const stageScreen = (stage) => {
+  const StageScreen = (props) => <StepSimpleDesign {...props} stage={stage} />;
+  StageScreen.displayName = `Step-${stage}`;
+  StageScreen.designScreen = true;
+  StageScreen.stage = stage;
+  return StageScreen;
+};
+const SIMPLE_SCREENS = [StepLocation, stageScreen('building'), stageScreen('system'), stageScreen('panels'), stageScreen('strings'), stageScreen('products'), stageScreen('proposal')];
+const PRO_SCREENS = [StepLocation, StepDraw, StepRoofDetails, StepObstructions, StepPanelConfig, StepManualEdit, Step3D, StepElectrical, StepFinancials, StepReport];
+
+export default function App({ designId, slug }) {
+  const router = useRouter();
+  const company = useSession((s) => s.company);
+  const state = useStore();
+  const design = useDesign();
+  const [exporting, setExporting] = useState(false);
+  const saveVersion = async () => {
+    setExporting(true);
+    try {
+      const { blob, filename } = await generatePdf({ design, project: state.project, place: state.place, finance: state.finance, snapshot: state.snapshot, company, client: state.client, designId: state.designId, proposalNo: state.proposalNo, validUntil: state.validUntil, subsidy: state.subsidy, save: false });
+      const form = new FormData();
+      form.append('file', blob, filename);
+      await api(`/api/designs/${state.designId}/versions`, { method: 'POST', form });
+      toast.success('Version saved');
+    } catch (e) {
+      toast.error(e.message || 'Could not save the version');
+    }
+    setExporting(false);
+  };
+  const [shareOpen, setShareOpen] = useState(false);
+  const [coverFor, setCoverFor] = useState(null); // the export waiting for a front page: 'pdf' | 'combined'
+
+  const summary = useMemo(
+    () => ({ address: state.place?.address || '', kwp: Number(design.totals.kwp.toFixed(3)), panels: design.totals.count, cost: Math.round(design.cost.total), annualKwh: Math.round(design.totals.acKwh), pricing: pricingFrom3D(design, state.config) }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [state.place, design.totals.kwp, design.totals.count, design.totals.acKwh, design.cost, state.config],
+  );
+  const sync = useDesignSync(designId, summary);
+  const canShare = useSession((s) => can(s.user, 'proposals', 'share'));
+  const designMeta = useResource(`/api/designs/${designId}`);
+  const loaded = sync.status === 'ready' && state.designId === designId;
+  useSolar();
+  useMarkedRoofs(loaded);
+  useCatalog(loaded, company?.id);
+  const mapReady = useMapToken(); // satellite images need it before the scene mounts
+
+  // one flow: Location → Building → Package → Panels → Strings → Products → Proposal
+  const slugs = SIMPLE_SLUGS;
+  const names = SIMPLE_STEPS;
+  const screens = SIMPLE_SCREENS;
+  const step = Math.max(0, slugs.indexOf(slug));
+  const Screen = screens[step];
+  const base = `/design/${designId}`;
+
+  const ready = [Boolean(state.origin)];
+  const reachable = (i) => i === 0 || ready[0];
+
+  useEffect(() => {
+    if (!loaded) return;
+    const st = useStore.getState();
+    st.set({ step, tool: slug === 'strings' && !st.readOnly ? 'string' : 'select', activeStringId: null, selectedId: null, navigate: (i) => router.push(`${base}/${slugs[Math.max(0, Math.min(slugs.length - 1, i))]}`) });
+    // older links: the one-page "plan" (and the pro steps) open on the panels step
+    if (!slugs.includes(slug)) router.replace(`${base}/${slug === 'plan' || (PRO_SLUGS.includes(slug) && slug !== 'location') ? 'panels' : 'location'}`);
+    else if (step > 0 && !st.origin) router.replace(`${base}/location`);
+  }, [loaded, slug, step, slugs, base, router]);
+
+  // undo / redo of every design change, with Ctrl/⌘ + Z and Ctrl/⌘ + Shift + Z (or Ctrl + Y)
+  // copy / paste of the selected base, obstacle or tree: Ctrl/⌘ + C, V, D
+  const specRef = useRef(design.spec);
+  useEffect(() => {
+    specRef.current = design.spec;
+  });
+  useEffect(() => {
+    const stop = startHistory();
+    const keys = historyKeys();
+    const clip = clipboardKeys(() => specRef.current);
+    return () => {
+      stop();
+      keys();
+      clip();
+    };
+  }, []);
+
+  if (sync.status === 'error')
+    return (
+      <div className="grid h-dvh place-items-center bg-slate-50 px-6 text-center">
+        <div>
+          <span className="mx-auto mb-4 grid h-12 w-12 place-items-center rounded-xl bg-red-50 text-red-600"><AlertCircle className="h-6 w-6" /></span>
+          <h1 className="text-lg font-semibold text-slate-900">This proposal could not be opened</h1>
+          <p className="mt-1 text-sm text-slate-500">{sync.error}</p>
+          <Link href="/dashboard/designs" className={buttonClass({ variant: 'primary', className: 'mt-6' })}>Back to proposals</Link>
+        </div>
+      </div>
+    );
+  if (!loaded || !mapReady) return <FullPageLoader />;
+
+  // a new company starts with an empty catalog: the designer needs its own solar panel and pole first
+  const cat = state.catalog;
+  if (cat && (!cat.panels?.length || !cat.pillars?.length)) {
+    const missing = [!cat.panels?.length && 'a solar panel', !cat.pillars?.length && 'a pole'].filter(Boolean).join(' and ');
+    return (
+      <div className="grid h-dvh place-items-center bg-slate-50 px-6 text-center">
+        <div className="max-w-md">
+          <span className="mx-auto mb-4 grid h-12 w-12 place-items-center rounded-xl bg-brand-soft text-brand"><AlertCircle className="h-6 w-6" /></span>
+          <h1 className="text-lg font-semibold text-slate-900">Add your products first</h1>
+          <p className="mt-1 text-sm text-slate-500">The designer uses your own catalog. Add {missing} under Product catalog (create a “Solar panels” category with type panels, and a “Poles” category with type poles), then come back to this proposal.</p>
+          <Link href="/dashboard/catalog" className={buttonClass({ variant: 'primary', className: 'mt-6' })}>Go to Product catalog</Link>
+        </div>
+      </div>
+    );
+  }
+
+  const blocker =
+    Screen === StepLocation ? !ready[0] && !state.markedDraft && 'Mark the roof on the map to continue'
+    : Screen === StepManualEdit ? !design.totals.count && 'Place at least one panel'
+    : null;
+
+  const go = (i) => {
+    if (Screen === Step3D) state.set({ snapshot: sceneApi.capture?.() || state.snapshot });
+    // roofs marked on the map but not confirmed yet go with the design (unless the user keeps the old ones)
+    if (Screen === StepLocation && i > 0 && state.markedDraft && !commitMarkedAreas(state.markedDraft)) return;
+    state.setStep(i);
+  };
+  const last = step === slugs.length - 1;
+
+  /** Every proposal download starts with the front-page choice. */
+  const chooseCover = (kind) => {
+    // the 3D view supplies the cover picture; in plan view the last captured one is used
+    const snapshot = sceneApi.capture?.() || state.snapshot;
+    if (snapshot !== state.snapshot) state.set({ snapshot });
+    setCoverFor(kind);
+  };
+  const downloadPdf = async (cover, pages = null) => {
+    const proposalPages = pages ? pages.filter((id) => id !== 'shadow') : null;
+    if (coverFor === 'combined' || pages?.includes('shadow')) {
+      // the shadow analysis runs first; its dialog builds the proposal (the chosen pages, this front
+      // page) and appends the analysis. Only the shadow analysis picked: just that report.
+      state.set({ cover, pdfPages: proposalPages, shadowReport: proposalPages && !proposalPages.length ? 'report' : 'combined' });
+      setCoverFor(null);
+      return;
+    }
+    const intent = coverFor;
+    setExporting(true);
+    try {
+      const { blob, filename } = await generatePdf({ design, project: state.project, place: state.place, finance: state.finance, snapshot: state.snapshot, company, client: state.client, designId: state.designId, proposalNo: state.proposalNo, validUntil: state.validUntil, cover, subsidy: state.subsidy, pages: proposalPages });
+      setCoverFor(null);
+      if (intent === 'whatsapp') {
+        await archiveProposalPdfAndShareOnWhatsApp({
+          designId: state.designId,
+          blob,
+          filename,
+          proposalName: state.designName,
+          client: state.client,
+        });
+      } else if (state.designId && blob && !sync.readOnly && isFullProposal(proposalPages)) { // archiving a version is part of editing (a full proposal only)
+        const form = new FormData();
+        form.append('file', blob, filename);
+        api(`/api/designs/${state.designId}/versions`, { method: 'POST', form }).catch((e) => console.error('Could not archive quotation PDF version', e));
+      }
+    } catch (e) {
+      console.error(e);
+      toast.error(e.message || 'Sorry, the PDF could not be created. Please try again.');
+    }
+    setExporting(false);
+  };
+  const noPanels = !design.totals.count;
+  const has3d = Screen === Step3D || Boolean(Screen.designScreen); // the shadow renders come from the live 3D view
+  const actions = [
+    !sync.readOnly && state.designId && !noPanels && { key: 'version', icon: Save, label: 'Save version', hint: 'Keep a copy of the proposal as it is now, with its PDF', disabled: exporting, onClick: saveVersion },
+    last && { key: 'pdf', icon: Download, label: 'Download proposal (PDF)', hint: noPanels ? 'Place at least one panel first' : 'Branded proposal for your client', disabled: exporting || noPanels, onClick: () => chooseCover('pdf') },
+    last && canShare && !sync.readOnly && { key: 'whatsapp', icon: WhatsAppIcon, label: 'Share on WhatsApp', hint: noPanels ? 'Place at least one panel first' : 'Create the proposal PDF and send a link to the client', disabled: exporting || noPanels, onClick: () => chooseCover('whatsapp') },
+    canShare && { key: 'share', icon: QrCode, label: 'Share link & QR code', hint: 'A public page anyone can open, no sign-in', onClick: () => setShareOpen(true) },
+    has3d && { key: 'shadow', icon: FileText, label: 'Shadow analysis only (PDF)', hint: noPanels ? 'Place at least one panel first' : 'Hour-by-hour shading on the panels', disabled: noPanels, onClick: () => state.set({ shadowReport: 'report' }) },
+  ].filter(Boolean);
+  const SaveIcon = sync.save === 'saved' ? Check : sync.save === 'error' ? CloudOff : sync.save === 'readonly' ? Eye : Loader2;
+
+  return (
+    <div className="flex h-dvh flex-col overflow-hidden bg-slate-50 text-slate-900">
+      <header className="flex h-14 shrink-0 items-center gap-3 border-b border-slate-200 bg-white px-4">
+        <button
+          type="button"
+          onClick={() => router.push((typeof window !== 'undefined' && sessionStorage.getItem(RETURN_PAGE_KEY)) || '/dashboard/designs')}
+          className="flex items-center gap-1 rounded-md py-1.5 pr-2.5 pl-1.5 text-[13px] font-medium text-slate-600 hover:bg-slate-100"
+          aria-label="Back"
+        >
+          <ChevronLeft className="h-4 w-4" /> <span className="hidden sm:inline">Proposals</span>
+        </button>
+        <div className="flex min-w-0 items-center gap-3 border-l border-slate-200 pl-4">
+          <LogoChip name={company.name} src={assetUrl(company.logo)} />
+          <div className="min-w-0 leading-tight">
+            <div className="max-w-[46vw] truncate text-sm font-semibold sm:max-w-[360px]">{state.designName}</div>
+            <div className="max-w-[46vw] truncate text-xs text-slate-500 sm:max-w-[360px]">For {state.client?.name || 'client'}{state.place?.address ? ` · ${state.place.address}` : ''}</div>
+          </div>
+        </div>
+        <div className={cx('ml-auto hidden items-center gap-1.5 text-xs md:flex', sync.save === 'error' ? 'text-red-600' : sync.save === 'readonly' ? 'rounded-full bg-amber-50 px-2.5 py-1 font-medium text-amber-800' : 'text-slate-400')} role="status">
+          <SaveIcon className={cx('h-3.5 w-3.5', (sync.save === 'dirty' || sync.save === 'saving') && 'animate-spin')} /> {SAVE_LABEL[sync.save]}
+        </div>
+        {!sync.readOnly && <UndoRedo />}
+        {actions.length > 0 && <ActionsMenu items={actions} busy={exporting} />}
+      </header>
+
+      {/* steps on the left; what is still missing and the next step on the right (no footer bar) */}
+      <nav aria-label="Progress" className="flex shrink-0 items-center gap-4 overflow-x-auto border-b border-slate-200 bg-white px-5">
+        <ol className="flex min-w-max flex-1 items-center gap-1 py-2.5">
+          {names.map((name, i) => {
+            const ok = reachable(i);
+            const done = i < step;
+            return (
+              <li key={name} className="flex items-center">
+                {i > 0 && <span aria-hidden className={cx('mx-1 h-px w-5', done || i === step ? 'bg-brand' : 'bg-slate-300')} />}
+                <button type="button" disabled={!ok} aria-current={i === step ? 'step' : undefined} onClick={() => go(i)} className={cx('flex items-center gap-2 rounded-md px-2 py-1 text-[13px] font-medium', i === step ? 'text-brand-ink' : ok ? 'text-slate-600 hover:bg-slate-100' : 'cursor-not-allowed text-slate-300')}>
+                  <span className={cx('grid h-5 w-5 place-items-center rounded-full text-[11px] font-semibold', i === step ? 'bg-brand text-brand-fg' : done ? 'bg-brand-muted text-brand-ink' : 'bg-slate-200 text-slate-500')}>
+                    {done ? <Check className="h-3 w-3" /> : i + 1}
+                  </span>
+                  {name}
+                  {/* worked out automatically: nothing is waiting for the user there */}
+                  {slugs[i] === 'strings' && <span className="text-[11px] font-normal text-slate-400">optional</span>}
+                </button>
+              </li>
+            );
+          })}
+        </ol>
+        {blocker && (
+          <span className="shrink-0 text-xs text-slate-500" role="status">
+            {blocker}
+          </span>
+        )}
+        {/* the system so far, next to the way forward */}
+        {step > 0 && design.totals.count > 0 && (
+          <span className="shrink-0 text-[13px] text-slate-600" aria-label="System size">
+            <b className="text-slate-900">{design.totals.kwp.toFixed(1)} kW</b> · {design.totals.count} panels
+          </span>
+        )}
+        {!last && (
+          <button type="button" disabled={Boolean(blocker)} onClick={() => go(step + 1)} className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md bg-brand px-3.5 text-[13px] font-semibold text-brand-fg hover:bg-brand-600 disabled:bg-slate-300">
+            Continue to {names[step + 1]} <ArrowRight className="h-3.5 w-3.5" />
+          </button>
+        )}
+      </nav>
+
+      {designMeta.data && (
+        <ClientChangeRequestPanel
+          design={designMeta.data}
+          className="mx-4 mt-3 shrink-0"
+          onSent={(updated) => designMeta.setData((prev) => (prev ? { ...prev, clientResponse: updated.clientResponse, clientReviewInvite: updated.clientReviewInvite, updatedAt: updated.updatedAt } : prev))}
+        />
+      )}
+
+      <main className="relative min-h-0 flex-1">
+        {/* the design steps share one screen (and one 3D scene): only its stage changes, so moving between
+            them never rebuilds the scene */}
+        {Screen.stage ? <StepSimpleDesign design={design} actions={actions} stage={Screen.stage} /> : <Screen design={design} actions={actions} />}
+      </main>
+
+      {shareOpen && <ShareModal designId={designId} onClose={() => setShareOpen(false)} />}
+      <CoverPicker open={Boolean(coverFor)} onClose={() => setCoverFor(null)} onDownload={downloadPdf} company={company} snapshot={state.snapshot} submitLabel={coverFor === 'combined' ? 'Continue' : coverFor === 'whatsapp' ? 'Share on WhatsApp' : 'Download PDF'} pages={coverFor === 'combined' ? null : PDF_PAGES.filter((p) => !p.needs3d || (has3d && coverFor === 'pdf'))} />
+      <Toaster />
+    </div>
+  );
+}

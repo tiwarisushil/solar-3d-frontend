@@ -1,0 +1,127 @@
+'use client';
+
+// Loads the open design from the backend and autosaves changes back to it.
+import { useEffect, useRef, useState } from 'react';
+import { api } from './api.js';
+import { can } from './permissions.js';
+import { useSession } from './session.js';
+import { SAVED_KEYS, serializeDesign, useStore } from './store.js';
+
+const SAVE_DELAY = 1200;
+
+/**
+ * `summary` = { address, kwp, panels, cost, annualKwh } shown in the designs list. Someone who may only view proposals
+ * can still open and explore the designer, but nothing is sent back: `save` is then 'readonly'.
+ */
+export function useDesignSync(designId, summary) {
+  const company = useSession((s) => s.company);
+  const readOnly = useSession((s) => !can(s.user, 'proposals', 'update'));
+  const readOnlyRef = useRef(readOnly);
+  useEffect(() => {
+    readOnlyRef.current = readOnly;
+  });
+  const loadedId = useStore((s) => s.designId);
+  const [load, setLoad] = useState({ status: 'loading', error: '' }); // loading | ready | error
+  const [save, setSave] = useState('saved'); // saved | dirty | saving | error
+  const ready = load.status === 'ready' && loadedId === designId;
+
+  const summaryRef = useRef(summary);
+  const sync = useRef({ timer: null, dirty: false, quiet: false, lastData: null, markDirty: () => {} });
+  useEffect(() => {
+    summaryRef.current = summary;
+  });
+
+  // load (skipped when moving between steps of the design that is already open)
+  useEffect(() => {
+    if (useStore.getState().designId === designId) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setLoad({ status: 'ready', error: '' });
+      return undefined;
+    }
+    let alive = true;
+    setLoad({ status: 'loading', error: '' });
+    api(`/api/designs/${designId}`)
+      .then((design) => {
+        if (!alive) return;
+        useStore.getState().loadDesign(design, company);
+        setLoad({ status: 'ready', error: '' });
+      })
+      .catch((e) => alive && setLoad({ status: 'error', error: e.message }));
+    return () => (alive = false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [designId]);
+
+  // autosave: any saved key (or the summary) changing marks the design dirty; one debounced PUT sends both
+  useEffect(() => {
+    if (!ready) return undefined;
+    const s = sync.current;
+    // what the server has: the design as it was loaded. "Saving…" is shown only when the design
+    // itself differs from this, not when the store merely replaced a value with an equal one.
+    s.lastData = JSON.stringify(serializeDesign(useStore.getState()));
+
+    const flush = async ({ keepalive = false } = {}) => {
+      clearTimeout(s.timer);
+      if (!s.dirty) return;
+      if (readOnlyRef.current) {
+        s.dirty = false; // view only: local changes are just for looking, never saved
+        return;
+      }
+      const st = useStore.getState();
+      if (st.designId !== designId) return;
+      s.dirty = false;
+      const quiet = s.quiet;
+      s.quiet = false;
+      const data = serializeDesign(st);
+      if (!quiet) setSave('saving');
+      // what is on its way counts as "what the server has" from now: a change made while it travels is
+      // compared with this, not with the older copy
+      const before = s.lastData;
+      s.lastData = JSON.stringify(data);
+      try {
+        await api(`/api/designs/${designId}`, { method: 'PUT', keepalive, body: { data, summary: summaryRef.current } });
+        setSave(s.dirty && !s.quiet ? 'dirty' : 'saved');
+      } catch {
+        s.lastData = before;
+        s.dirty = true;
+        setSave('error');
+      }
+    };
+    // `summaryOnly`: the list figures (kWp, price…) settled after loading; they are saved without
+    // telling the user anything changed, because nothing of theirs did
+    s.markDirty = ({ summaryOnly = false } = {}) => {
+      const same = JSON.stringify(serializeDesign(useStore.getState())) === s.lastData;
+      if (same && !summaryOnly) return; // an equal value was set again: nothing to save
+      if (same && !s.dirty) s.quiet = true;
+      else if (!same) s.quiet = false;
+      s.dirty = true;
+      if (readOnlyRef.current) return;
+      if (!s.quiet) setSave('dirty');
+      clearTimeout(s.timer);
+      s.timer = setTimeout(flush, SAVE_DELAY);
+    };
+
+    const unsubscribe = useStore.subscribe((st, prev) => {
+      if (st.designId === designId && prev.designId === designId && SAVED_KEYS.some((k) => st[k] !== prev[k])) s.markDirty();
+    });
+    // leaving the tab: send what is pending (keepalive lets small payloads finish after unload)
+    const onHide = () => document.visibilityState === 'hidden' && flush({ keepalive: true });
+    document.addEventListener('visibilitychange', onHide);
+    return () => {
+      unsubscribe();
+      document.removeEventListener('visibilitychange', onHide);
+      s.markDirty = () => {};
+      flush();
+    };
+  }, [ready, designId]);
+
+  // the computed summary (kWp, cost…) settles a moment after the geometry changes
+  const summaryKey = JSON.stringify(summary);
+  const savedSummary = useRef(null);
+  useEffect(() => {
+    if (!ready) return;
+    if (savedSummary.current !== null && savedSummary.current !== summaryKey) sync.current.markDirty({ summaryOnly: true });
+    savedSummary.current = summaryKey;
+  }, [summaryKey, ready]);
+
+  return { ...load, save: readOnly ? 'readonly' : save, readOnly };
+}

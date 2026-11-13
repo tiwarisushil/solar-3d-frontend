@@ -1,0 +1,177 @@
+'use client';
+
+import { jsPDF } from 'jspdf';
+import { loadBranding } from './branding.js';
+import { enrichLinesGst, enrichLinesHsn, expandCollapsedPackageLines, gstSupplyType, invoiceTax, resolveProposalPricing, stateFromGstin, summarizeLinePricing } from './pricing.js';
+import { PAYMENT_MODE_LABEL, fmtPdfDate, pdfSlug } from './billingPdfShared.js';
+import { invoiceDetailRows } from './invoiceDetails.js';
+import { IM, IW, baseTable, ctx, detailGrid, ensurePage, finishDocument, goodsTable, moneyFormats, partyMetaTable, signatureStrip, taxSummary, termsBlock, titleBar, wordsRow } from './gridPdf.js';
+import { currentTax } from './tax.js';
+
+const fmtDate = fmtPdfDate;
+const slug = pdfSlug;
+
+export function downloadBlob(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+/** A stored line as the table prints it: stock lines show their batch in the detail; issued material prints plain. */
+function printableLine(l) {
+  return {
+    ...l,
+    // material issued to the installation (invoices from before issuing was removed) prints as a plain line: no batch or serial numbers
+    detail: l.issueId ? String(l.detail || '').replace(/\s*·?\s*S\/N:.*$/s, '').trim() : [l.batchNo ? `Batch ${l.batchNo}` : '', l.detail].filter(Boolean).join(' · '), // stock lines carry their batch
+    serials: l.issueId ? [] : l.serials,
+  };
+}
+
+/**
+ * The pricing an invoice prints. An invoice made from bills keeps the bills' frozen numbers as they are (nothing is
+ * recomputed, so it matches what was paid). Any other invoice is re-summarised from its lines, GST added on top.
+ */
+function printablePricing(invoice, { quote, proposalPricing, catalog, packages }) {
+  const stored = invoice.pricing;
+  // An issued invoice prints exactly what was stored when its lines carry their own taxable amount and GST (invoices
+  // from bills, AMC parts invoices): recomputing would re-guess rates - and turn a real 0 % GST into the default 18 %.
+  // Only older invoices without per-line amounts are worked out again below.
+  const numeric = (v) => v !== null && v !== '' && Number.isFinite(Number(v));
+  const storedLinesComplete = Boolean(stored?.lines?.length) && stored.lines.filter((l) => l?.name).every((l) => numeric(l.taxable) && numeric(l.gstAmount) && numeric(l.gstPercent));
+  // an invoice (backend Bill) keeps its frozen pricing exactly as it was paid
+  if (stored?.frozen && stored.lines?.length) {
+    const withGst = stored.withGst !== false && stored.invoiceGstMode !== 'without_gst';
+    return { pricing: { ...stored, withGst }, lines: stored.lines.filter((l) => l?.name).map(printableLine), withGst };
+  }
+  if ((stored?.fromBills || storedLinesComplete) && stored.lines?.length) {
+    const withGst = stored.withGst !== false && stored.invoiceGstMode !== 'without_gst';
+    return { pricing: { ...stored, gstIncluded: stored.fromBills ? false : stored.gstIncluded !== false, withGst }, lines: stored.lines.filter((l) => l?.name).map(printableLine), withGst };
+  }
+  const resolved = resolveProposalPricing({ pricing: stored || proposalPricing, quote, total: invoice.total, title: invoice.title });
+  const raw = resolved?.lines?.length
+    ? { ...resolved, lines: enrichLinesGst(enrichLinesHsn(expandCollapsedPackageLines(resolved.lines, packages), catalog), catalog, packages, resolved.gstRate || 18) }
+    : resolved;
+  const withGst = raw?.invoiceGstMode !== 'without_gst';
+  const split = raw?.extraDiscountAmount > 0 || raw?.proposalDiscountAmount > 0;
+  const priced = summarizeLinePricing({
+    lines: (raw?.lines || []).filter((l) => l?.name).map((l) => ({ ...printableLine(l), amount: l.amount ?? (Number(l.qty) || 1) * (Number(l.rate) || 0) })),
+    gstIncluded: false,
+    // invoices with an extra discount store the combined amount; older ones just their single discount
+    discount: split ? raw.discountAmount : raw?.discount ?? 0,
+    discountIsPercent: split ? false : raw?.discountIsPercent,
+    withGst,
+  });
+  return { pricing: { ...raw, ...priced, discountRemark: raw?.discountRemark, gstIncluded: false, withGst, invoiceGstMode: raw?.invoiceGstMode }, lines: priced.lines.filter((l) => l?.name), withGst };
+}
+
+/** The discount lines under the goods: the proposal's and the extra one, each with its remark (older invoices: one). */
+function discountRows(pricing, amt) {
+  if (!(pricing?.discountAmount > 0)) return [];
+  const split = pricing.extraDiscountAmount > 0 || pricing.proposalDiscountAmount > 0;
+  const rows = split
+    ? [[pricing.extraDiscountAmount > 0 ? 'Proposal discount' : 'Discount', pricing.discountRemark, pricing.proposalDiscountAmount], ['Extra discount', pricing.extraDiscountRemark, pricing.extraDiscountAmount]]
+    : [['Discount', pricing.discountRemark, pricing.discountAmount]];
+  return rows.filter(([, , value]) => value > 0).map(([label, remarkRaw, value]) => {
+    const remark = String(remarkRaw || '').trim();
+    return [remark ? `${label}\n${remark}` : label, `-${amt(value)}`];
+  });
+}
+
+/** Build invoice PDF bytes (for S3 upload or preview). */
+export async function buildInvoicePdfBlob({ invoice, company = {}, client = {}, currency = 'INR', quote = null, proposalPricing = null, catalog = null, packages = null }) {
+  const brand = await loadBranding(company);
+  const { company: co, client: clientBase, money } = ctx(company, client, currency);
+  // an invoice on a proposal can carry the buyer's company name; a direct invoice has it in its Bill to
+  const cl = invoice.billToCompany ? { ...clientBase, company: invoice.billToCompany } : clientBase;
+  const doc = new jsPDF({ unit: 'mm', format: 'a4', orientation: 'portrait', compress: true });
+  doc.setProperties({ title: `Invoice ${invoice.invoiceNo}`, author: co.name, subject: `Tax invoice for ${cl.name || 'client'}`, creator: co.name });
+
+  const { pricing, lines, withGst } = printablePricing(invoice, { quote, proposalPricing, catalog, packages });
+  const total = pricing.total;
+  const tax = invoiceTax(pricing, total);
+  const supply = gstSupplyType(co.taxId, cl.gstNumber);
+  const useIgst = withGst && supply === 'igst';
+  const { amt, rs, words } = moneyFormats(currency, money);
+  const coState = stateFromGstin(co.taxId);
+  const clState = stateFromGstin(cl.gstNumber);
+  const fromBills = Boolean(invoice.billRefs?.length);
+
+  let y = titleBar(doc, brand, IM, withGst ? 'TAX INVOICE' : 'INVOICE');
+
+  const metaRows = [
+    ['Invoice No.', invoice.invoiceNo],
+    ['Dated', fmtDate(invoice.issuedOn)],
+    ['Reference', invoice.title || '—'],
+  ];
+  // an older invoice lists the invoices it consolidated; an invoice lists the bills (goods out of stock) it covers
+  if (fromBills) metaRows.push(['Invoices', invoice.billRefs.map((b) => b.billNo).join(', ')]);
+  if (invoice.ewayNos?.length) metaRows.push(['Bills', invoice.ewayNos.join(', ')]);
+  const paid = invoice.paid;
+  if (paid) {
+    metaRows.push(['Paid by', [PAYMENT_MODE_LABEL[paid.mode] || paid.mode, paid.reference].filter(Boolean).join(' · ') || '—']);
+    metaRows.push(['Paid on', fmtDate(paid.receivedOn || invoice.issuedOn)]);
+  }
+  if (invoice.status === 'void') metaRows.push(['Status', 'Void']);
+  if (withGst && supply && currentTax().isGst) metaRows.push(['Supply type', supply === 'igst' ? 'Inter-state (IGST)' : 'Intra-state (CGST/SGST)']);
+  y = partyMetaTable(doc, brand, { y, co, cl, coState, clState, metaRows });
+
+  // the optional reference & delivery details that were filled in: a two-column grid, terms of delivery across the row
+  y = detailGrid(doc, brand, y, invoiceDetailRows(invoice.details, fmtDate));
+
+  // an older invoice lists each consolidated invoice's lines under its number
+  const groups = fromBills
+    ? invoice.billRefs.map((b) => ({ heading: `Invoice ${b.billNo} · ${fmtDate(b.issuedOn)}${b.ewayNos?.length ? ` · Bill ${b.ewayNos.join(', ')}` : ''}`, lines: lines.filter((l) => l.billNo === b.billNo) })).filter((g) => g.lines.length)
+    : [{ lines }];
+  // lines of an invoice the refs don't know (shouldn't happen) still print
+  const grouped = new Set(groups.flatMap((g) => g.lines));
+  const rest = lines.filter((l) => !grouped.has(l));
+  if (rest.length) groups.push({ lines: rest });
+
+  y = goodsTable(doc, brand, { y, groups, withGst, amt, rs, extraRows: discountRows(pricing, amt), tax, useIgst, total });
+  y = wordsRow(doc, brand, y, 'Amount Chargeable (in words)', words(total));
+
+  if (fromBills) {
+    // what was paid on each consolidated invoice
+    y = ensurePage(doc, y, 24);
+    y = baseTable(doc, brand, {
+      startY: y,
+      head: [['Invoice No.', 'Dated', 'Bills', 'Paid']],
+      body: [
+        ...invoice.billRefs.map((b) => [b.billNo, fmtDate(b.issuedOn), b.ewayNos?.length ? b.ewayNos.join(', ') : '-', amt(b.total)]),
+        ['Total received', '', '', rs(invoice.billRefs.reduce((a, b) => a + (Number(b.total) || 0), 0))],
+      ],
+      columnStyles: { 0: { cellWidth: 36 }, 1: { cellWidth: 30 }, 3: { cellWidth: 36, halign: 'right' } },
+      didParseCell: (d) => {
+        if (d.section === 'body' && d.row.index === invoice.billRefs.length) d.cell.styles.fontStyle = 'bold';
+      },
+    });
+  }
+
+  if (paid) {
+    // the receipt strip: an invoice is paid in full when it is made
+    y = ensurePage(doc, y, 14);
+    y = baseTable(doc, brand, {
+      startY: y,
+      body: [[{ content: `PAID IN FULL — ${rs(total)} received by ${PAYMENT_MODE_LABEL[paid.mode] || paid.mode || 'cash'}${paid.reference ? ` (${paid.reference})` : ''} on ${fmtDate(paid.receivedOn || invoice.issuedOn)}${paid.note ? `. ${paid.note}` : ''}`, styles: { fontStyle: 'bold', fillColor: brand.primary, textColor: brand.primaryFg, cellPadding: 2.5 } }]],
+      columnStyles: { 0: { cellWidth: IW } },
+    });
+  }
+
+  if (withGst) y = taxSummary(doc, brand, { y, tax, useIgst, amt, currency });
+
+  y = signatureStrip(doc, brand, { y, co, declaration: 'Declaration\nWe declare that this invoice shows the actual price of the goods described and that all particulars are true and correct.' });
+
+  termsBlock(doc, brand, y, invoice.termsAndConditions || co.pdfTerms);
+
+  finishDocument(doc, co, brand, 'This is a Computer Generated Invoice');
+  const filename = `${['invoice', invoice.invoiceNo, slug(cl.name)].filter(Boolean).join('_')}.pdf`;
+  return { blob: doc.output('blob'), filename };
+}
+
+export async function generateInvoicePdf(params) {
+  const { blob, filename } = await buildInvoicePdfBlob(params);
+  downloadBlob(blob, filename);
+}

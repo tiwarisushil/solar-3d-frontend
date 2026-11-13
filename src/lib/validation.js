@@ -1,0 +1,448 @@
+'use client';
+
+// Form validation, mirroring backend/src/validation (same rules, same messages) so people are told what is
+// wrong before a request is sent; the server checks again. Keep the two in step.
+import { useCallback, useMemo, useState } from 'react';
+import { z } from 'zod';
+import { currentTax } from './tax.js';
+
+// null → '' so a cleared field counts as blank; undefined (key absent) is left alone so partial updates stay partial
+const blankToEmpty = (v) => (v === null ? '' : v);
+
+/** A string field that may be empty; when not empty it must pass `check`. `transform` normalises first. */
+function optional(check, message, { max = 200, transform = (v) => v } = {}) {
+  return z
+    .preprocess(
+      blankToEmpty,
+      z.string('Enter text').trim().max(max, `Too long (up to ${max} characters)`).transform(transform).refine((v) => v === '' || check(v), message),
+    )
+    .optional();
+}
+/** Same, but must be filled. */
+function required(check, message, { max = 200, transform = (v) => v, blank = 'This field is required' } = {}) {
+  return z.preprocess(
+    blankToEmpty,
+    z.string(blank).trim().min(1, blank).max(max, `Too long (up to ${max} characters)`).transform(transform).refine(check, message),
+  );
+}
+
+/* ───────────── patterns ───────────── */
+
+const EMAIL = /^[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*\.[A-Za-z]{2,}$/;
+const validEmail = (v) => EMAIL.test(v) && !v.includes('..') && !v.startsWith('.') && !v.split('@')[0].endsWith('.');
+
+/**
+ * A phone number, from any country. An Indian mobile is kept as its 10 digits (a leading +91 / 91 / 0
+ * and separators are dropped, as before); any other number is kept with its country code, "+971501234567".
+ */
+const normalizePhone = (v) => {
+  const raw = String(v).trim();
+  if (/[^\d\s().+-]/.test(raw)) return raw; // letters or other junk: kept, so it is rejected (not emptied)
+  let p = raw.replace(/[^\d]/g, '');
+  const plus = raw.startsWith('+') || raw.startsWith('00');
+  if (raw.startsWith('00')) p = p.slice(2); // 00 971… = +971…
+  if (p.length === 12 && p.startsWith('91') && /^[6-9]/.test(p.slice(2))) return p.slice(2); // +91 98765 43210
+  if (!plus && p.length === 11 && p.startsWith('0') && /^[6-9]/.test(p.slice(1))) return p.slice(1); // 098765 43210
+  if (!plus) return p; // no country code: must be an Indian mobile (so a mistyped one is caught, not read as abroad)
+  return p ? `+${p}` : '';
+};
+// an Indian mobile (10 digits, 6–9 first), or another country's number: + country code, 8–15 digits (E.164)
+const validPhone = (v) => /^[6-9]\d{9}$/.test(v) || (/^\+[1-9]\d{7,14}$/.test(v) && !v.startsWith('+91')); // +91 must be a real Indian mobile
+
+/** PAN: 5 letters, 4 digits, 1 letter; the 4th letter is the holder type (P person, C company, …). */
+const validPan = (v) => /^[A-Z]{3}[ABCFGHJKLPT][A-Z]\d{4}[A-Z]$/.test(v);
+
+/** GSTIN: state code (01–38), the holder's PAN, entity number, 'Z', check character. */
+const validGstin = (v) => /^(0[1-9]|[12]\d|3[0-8])[A-Z]{3}[ABCFGHJKLPT][A-Z]\d{4}[A-Z][1-9A-Z]Z[0-9A-Z]$/.test(v);
+
+const validWebsite = (v) => {
+  try {
+    const url = new URL(/^https?:\/\//i.test(v) ? v : `https://${v}`);
+    return /^https?:$/.test(url.protocol) && /^[a-z0-9-]+(\.[a-z0-9-]+)+$/i.test(url.hostname) && /[a-z]{2,}$/i.test(url.hostname);
+  } catch {
+    return false;
+  }
+};
+
+// Names take any characters (digits and symbols too: "Client1", "A-1 Solar #2"); a required name only has to be given.
+
+/* ───────────── text-like fields ───────────── */
+
+export const emailRequired = required(validEmail, 'Enter a valid email address (like name@company.com)', { transform: (v) => v.toLowerCase(), blank: 'Email is required' });
+export const emailOptional = optional(validEmail, 'Enter a valid email address (like name@company.com)', { transform: (v) => v.toLowerCase() });
+export const phoneOptional = optional(validPhone, 'Enter a valid mobile number: 10 digits in India, or with the country code elsewhere (like +971 50 123 4567)', { max: 20, transform: normalizePhone });
+export const panOptional = optional(validPan, 'Enter a valid PAN, like ABCDE1234F', { max: 10, transform: (v) => v.toUpperCase() });
+/** Another country's tax number (VAT, TIN…): 4–20 letters and digits, at least two digits. */
+// (something that starts like a GSTIN, 2 digits + 5 letters, must be a valid GSTIN: catches typos)
+const validTaxNumber = (v) => !/^\d{2}[A-Z]{5}/.test(v) && /^[A-Z0-9][A-Z0-9 ./-]{3,19}$/.test(v) && /\d.*\d/.test(v); // real tax numbers carry digits
+// a GST company's numbers must be real GSTINs; any other tax takes its own country's number
+const validTaxId = (v) => (currentTax().isGst ? validGstin(v) : validTaxNumber(v));
+export const gstinOptional = optional(validTaxId, 'Enter a valid tax number (a GSTIN looks like 27ABCDE1234F1Z5)', { max: 20, transform: (v) => v.toUpperCase() });
+export const websiteOptional = optional(validWebsite, 'Enter a valid website, like www.example.com');
+export const personNameRequired = required(() => true, 'Enter a name', { max: 120, blank: 'Name is required' });
+export const personNameOptional = optional(() => true, 'Enter a name', { max: 120 });
+export const orgNameRequired = required(() => true, 'Enter a name', { max: 120, blank: 'Name is required' });
+export const consumerNumberOptional = optional((v) => /^[A-Za-z0-9][A-Za-z0-9/-]{3,29}$/.test(v), 'Enter a valid consumer number (4–30 letters, digits, - or /)', { max: 30 });
+export const skuOptional = optional((v) => /^[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(v), 'SKU can only have letters, digits and . _ - /', { max: 60 });
+export const hsnOptional = optional((v) => /^\d{4}(\d{2}(\d{2})?)?$/.test(v), 'HSN code must be 4, 6 or 8 digits', { max: 8 });
+export const hexColor = z.string().regex(/^#[0-9a-fA-F]{6}$/, 'Use a colour like #1d4ed8');
+export const currencyCode = z.preprocess((v) => (typeof v === 'string' ? v.trim().toUpperCase() : v), z.string().regex(/^[A-Z]{3}$/, 'Use a 3-letter currency code, like INR'));
+
+/** Free text: any characters, capped. */
+export const textOptional = (max, label = 'Text') => z.preprocess(blankToEmpty, z.string('Enter text').trim().max(max, `${label} can be at most ${max} characters`)).optional();
+export const textRequired = (max, label = 'This field') => z.preprocess(blankToEmpty, z.string(`${label} is required`).trim().min(1, `${label} is required`).max(max, `${label} can be at most ${max} characters`));
+
+/** Password being SET: 8+ characters with a letter and a digit. (Sign-in only checks it is present.) */
+export const newPassword = z.string('Enter a password').min(8, 'Password must be at least 8 characters').max(200, 'Password is too long').refine((v) => /[A-Za-z]/.test(v) && /\d/.test(v), 'Password needs at least one letter and one number');
+export const optionalNewPassword = z.preprocess(blankToEmpty, z.union([z.literal(''), newPassword])).optional();
+export const loginPassword = z.string('Password is required').min(1, 'Password is required').max(200, 'Password is too long');
+
+/* ───────────── numbers (blank string → treated as "not given") ───────────── */
+
+const numberLike = (v) => (typeof v === 'string' ? (v.trim() === '' ? null : Number(v)) : v);
+
+/** Required number in range. */
+export const num = ({ min = 0, max = 1e9, int = false, label = 'Value' } = {}) => {
+  let s = z.number(`${label} must be a number`).finite(`${label} must be a number`).min(min, `${label} must be at least ${min}`).max(max, `${label} must be at most ${max}`);
+  if (int) s = s.int(`${label} must be a whole number`);
+  return z.preprocess(numberLike, s);
+};
+/** May be blank (→ null); otherwise in range. */
+export const numOptional = (opts) => z.preprocess((v) => (v === undefined ? undefined : numberLike(v)), num(opts).nullable().optional().or(z.null()));
+
+export const lat = num({ min: -90, max: 90, label: 'Latitude' });
+export const lng = num({ min: -180, max: 180, label: 'Longitude' });
+export const objectIdString = z.string().regex(/^[0-9a-fA-F]{24}$/, 'Invalid id');
+export const objectIdOrBlank = z.preprocess(blankToEmpty, z.union([z.literal(''), objectIdString])).optional();
+
+export { z };
+
+const common = { emailRequired, emailOptional, phoneOptional, panOptional, gstinOptional, websiteOptional, personNameRequired, personNameOptional, orgNameRequired, consumerNumberOptional, skuOptional, hsnOptional, hexColor, currencyCode, textOptional, textRequired, newPassword, optionalNewPassword, loginPassword, num, numOptional, lat, lng, objectIdString, objectIdOrBlank, z };
+const PRODUCT_TYPES = ['general', 'panels', 'poles'];
+const ATTRIBUTE_TYPES = ['text', 'number', 'select', 'boolean'];
+const PILLAR_SHAPES = ['l-shape', 'cylindrical', 'square'];
+const STEP_STATUS = ['pending', 'in_progress', 'done'];
+const STEP_PRIORITIES = ['low', 'medium', 'high', 'urgent'];
+const TICKET_CATEGORIES = ['technical', 'billing', 'account', 'other'];
+const TICKET_PRIORITIES = ['low', 'normal', 'high'];
+const CLIENT_TICKET_CATEGORIES = ['installation', 'service', 'billing', 'proposal', 'other'];
+const TICKET_STATUS = ['open', 'in_progress', 'resolved', 'closed'];
+export const CLIENT_PROJECT_TYPES = ['residential', 'industrial', 'commercial'];
+export const CLIENT_ROOF_TYPES = ['concrete', 'factory', 'tin_shed'];
+export const CLIENT_GRID_TYPES = ['on_grid', 'off_grid', 'hybrid'];
+
+const f = { ...common };
+// Request schemas, one per form/endpoint. Objects are "loose": fields not listed here pass through untouched
+// (the services still pick what they accept), while every listed field is checked and normalised.
+
+const obj = (shape) => z.looseObject(shape);
+const strArray = (max, itemMax = 60) => z.array(z.string().trim().max(itemMax, `Each entry can be at most ${itemMax} characters`)).max(max, `Up to ${max} entries`);
+
+/* ───────────── auth ───────────── */
+
+export const loginSchema = obj({ email: f.emailRequired, password: f.loginPassword });
+export const profileSchema = obj({ name: f.personNameOptional });
+export const passwordChangeSchema = obj({ current: f.loginPassword, next: f.newPassword });
+
+/* ───────────── clients ───────────── */
+
+export const clientSchema = obj({
+  name: f.orgNameRequired,
+  email: f.emailOptional,
+  phone: f.phoneOptional,
+  pan: f.panOptional,
+  gstNumber: f.gstinOptional,
+  projectType: z.enum(CLIENT_PROJECT_TYPES, 'Invalid project type').optional(),
+  roofType: z.union([z.enum(CLIENT_ROOF_TYPES), z.literal('')]).optional(),
+  address: f.textOptional(400, 'Address'),
+  notes: f.textOptional(1000, 'Notes'),
+  consumerNumber: f.consumerNumberOptional,
+  kwRequired: f.numOptional({ min: 0.1, max: 100000, label: 'Required kW' }),
+  source: f.textOptional(80, 'Source'),
+  referredBy: obj({ name: f.personNameOptional, phone: f.phoneOptional }).optional(),
+});
+export const clientUpdateSchema = clientSchema.partial();
+
+/* ───────────── company / admin ───────────── */
+
+const companyProfile = {
+  name: f.orgNameRequired,
+  email: f.emailOptional,
+  phone: f.phoneOptional,
+  address: f.textOptional(400, 'Address'),
+  website: f.websiteOptional,
+  taxId: f.gstinOptional,
+  pan: f.panOptional,
+};
+
+/** Who a direct invoice (no proposal, no client record) is addressed to. */
+export const invoiceBillToSchema = obj({
+  name: orgNameRequired,
+  company: textOptional(120, 'Company name'),
+  phone: phoneOptional,
+  email: emailOptional,
+  address: textOptional(400, 'Address'),
+  gstNumber: gstinOptional,
+});
+
+/** Invoice numbers: fixed part + next running number typed with its leading zeros ("INVCMP2026" + "0001"). */
+export const invoiceNumberingSchema = obj({
+  prefix: optional((v) => /^[A-Za-z0-9/_.-]*$/.test(v), 'The fixed part can only have letters, digits and - / _ .', { max: 20 }),
+  next: required((v) => /^\d{1,10}$/.test(v) && Number(v) >= 1, 'Enter the next number as digits only, like 0001', { max: 10, blank: 'Enter the next invoice number' }),
+});
+
+/** Proposal numbers: prefix + next running number (typed with its leading zeros) + suffix. */
+const numberPart = (what) => optional((v) => /^[A-Za-z0-9/_.-]*$/.test(v), `The ${what} can only have letters, digits and - / _ .`, { max: 20 });
+export const proposalNumberingSchema = obj({
+  prefix: numberPart('prefix'),
+  suffix: numberPart('suffix'),
+  next: required((v) => /^\d{1,10}$/.test(v) && Number(v) >= 1, 'Enter the next number as digits only, like 0001', { max: 10, blank: 'Enter the next proposal number' }),
+});
+
+export const companySelfSchema = obj({
+  ...companyProfile,
+  invoiceNumbering: invoiceNumberingSchema.optional(),
+  proposalNumbering: proposalNumberingSchema.optional(),
+  signatoryName: f.personNameOptional,
+  signatoryTitle: f.textOptional(80, 'Title'),
+  qrLabel: f.textOptional(80, 'QR label'),
+  paymentQrLabel: f.textOptional(80, 'Payment QR caption'),
+  bankAccountName: f.textOptional(120, 'Account name'),
+  bankName: f.textOptional(120, 'Bank name'),
+  bankAccountNumber: f.z.preprocess((v) => (typeof v === 'string' ? v.replace(/\s+/g, '') : v), f.z.string().regex(/^\d{6,20}$|^$/, 'Account number is 6 to 20 digits')).optional(),
+  bankIfsc: f.z.preprocess((v) => (typeof v === 'string' ? v.trim().toUpperCase() : v), f.z.string().regex(/^[A-Z]{4}0[A-Z0-9]{6}$|^$/, 'IFSC looks like SBIN0001234')).optional(),
+  bankBranch: f.textOptional(120, 'Branch'),
+  bankAccountType: f.textOptional(40, 'Account type'),
+  upiId: f.z.preprocess((v) => (typeof v === 'string' ? v.trim() : v), f.z.string().regex(/^[\w.-]{2,}@[a-zA-Z][\w.-]*$|^$/, 'UPI ID looks like name@bank')).optional(),
+  tagline: f.textOptional(160, 'Tagline'),
+  currency: f.currencyCode.optional(),
+  taxLabel: f.textOptional(20, 'Tax name'),
+  taxRate: f.num({ min: 0, max: 100, label: 'Tax rate' }).optional(),
+  tariff: f.num({ min: 0, max: 1000, label: 'Tariff' }).optional(),
+  otherCostPerKw: f.num({ min: 0, max: 1e7, label: 'Other cost per kW' }).optional(),
+}).partial();
+
+const limits = obj({
+  maxConcurrentLogins: f.num({ min: 1, max: 1000, int: true, label: 'Concurrent logins' }).optional(),
+  maxBranches: f.num({ min: 1, max: 500, int: true, label: 'Max branches' }).optional(),
+  maxClients: f.num({ min: 1, max: 10000000, int: true, label: 'Max clients' }).optional(),
+  maxDesigns: f.num({ min: 1, max: 10000000, int: true, label: 'Max designs' }).optional(),
+});
+
+// A company is set up with or without branches. With branches, `loginEmail` is the company admin and the first
+// branch has its own owner, who must sign in with a different email.
+export const adminCompanyCreateSchema = obj({
+  ...companyProfile,
+  hasBranches: z.boolean().optional(),
+  loginEmail: f.emailRequired,
+  password: f.newPassword,
+  contactName: f.personNameOptional,
+  branchName: f.textOptional(120, 'Branch name'),
+  branchOwnerName: f.personNameOptional,
+  branchOwnerEmail: f.emailOptional,
+  branchOwnerPassword: f.optionalNewPassword,
+  notes: f.textOptional(1000, 'Notes'),
+  limits: limits.optional(),
+}).superRefine((v, ctx) => {
+  if (!v.hasBranches) return;
+  if (!v.branchOwnerEmail) ctx.addIssue({ code: 'custom', path: ['branchOwnerEmail'], message: 'Enter the branch owner’s email' });
+  else if (v.branchOwnerEmail === v.loginEmail) ctx.addIssue({ code: 'custom', path: ['branchOwnerEmail'], message: 'Use a different email from the company admin' });
+  if (!v.branchOwnerPassword) ctx.addIssue({ code: 'custom', path: ['branchOwnerPassword'], message: 'Enter a password for the branch owner' });
+});
+export const adminCompanyUpdateSchema = obj({ ...companyProfile, loginEmail: f.emailOptional, adminEmail: f.emailOptional, notes: f.textOptional(1000, 'Notes'), limits: limits.optional() }).partial();
+export const passwordResetSchema = obj({ password: f.newPassword, who: z.enum(['owner', 'admin']).optional() });
+
+export const planSchema = obj({
+  name: f.orgNameRequired,
+  description: f.textOptional(300, 'Description'),
+  priceMonthly: f.num({ min: 0, max: 1e7, label: 'Monthly price' }).optional(),
+  maxConcurrentLogins: f.num({ min: 1, max: 1000, int: true, label: 'Concurrent logins' }).optional(),
+  maxBranches: f.num({ min: 1, max: 500, int: true, label: 'Branches' }).optional(),
+  maxClients: f.num({ min: 1, max: 10000000, int: true, label: 'Clients' }).optional(),
+  maxDesigns: f.num({ min: 1, max: 10000000, int: true, label: 'Designs' }).optional(),
+  features: z.array(z.string().trim().max(100, 'A feature can be at most 100 characters')).max(20, 'A plan can list up to 20 features').optional(),
+});
+export const planUpdateSchema = planSchema.partial();
+
+/* ───────────── agents ───────────── */
+
+export const agentCreateSchema = obj({ name: f.personNameRequired, email: f.emailRequired, password: f.newPassword, phone: f.phoneOptional, roles: strArray(10, 40).optional() });
+export const agentUpdateSchema = obj({ name: f.personNameRequired, email: f.emailRequired, password: f.optionalNewPassword, phone: f.phoneOptional, roles: strArray(10, 40).optional() }).partial();
+
+/* ───────────── catalog ───────────── */
+
+export const categorySchema = obj({
+  name: f.textRequired(60, 'Category name'),
+  description: f.textOptional(300, 'Description'),
+  type: z.enum(PRODUCT_TYPES, 'Invalid category type').optional(),
+  attributes: z.array(obj({
+    key: f.textOptional(40, 'Attribute key'),
+    label: f.textRequired(60, 'Attribute label'),
+    dataType: z.enum(ATTRIBUTE_TYPES, 'Invalid attribute type').optional(),
+    isRequired: z.boolean().optional(),
+    options: strArray(50).optional(),
+    sortOrder: f.numOptional({ min: 0, max: 1000, label: 'Order' }),
+  })).max(40, 'A category can have up to 40 attributes').optional(),
+  parent: z.string().optional(), // a parent category id, or '' for none
+});
+export const categoryUpdateSchema = categorySchema.partial();
+
+export const parentCategorySchema = obj({
+  name: f.textRequired(60, 'Parent category name'),
+  description: f.textOptional(300, 'Description'),
+});
+
+const attributeValue = z.union([z.string().max(200, 'Attribute values can be at most 200 characters'), z.number(), z.boolean(), z.null()]);
+
+// No prices, stock or manufacture year here: those belong to batches (stockReceiveSchema)
+export const productSchema = obj({
+  category: f.objectIdString,
+  name: f.textOptional(120, 'Product name'),
+  brand: f.textOptional(60, 'Brand'),
+  model: f.textOptional(60, 'Model'),
+  sku: f.skuOptional,
+  hsnCode: f.hsnOptional,
+  unit: f.textOptional(20, 'Unit'),
+  gstPercent: f.numOptional({ min: 0, max: 100, label: 'GST %' }),
+  warrantyMonths: f.numOptional({ min: 0, max: 720, int: true, label: 'Warranty' }),
+  reorderLevel: f.numOptional({ min: 0, max: 1e9, label: 'Reorder level' }),
+  isActive: z.boolean().optional(),
+  isSerialized: z.boolean().optional(),
+  description: f.textOptional(1000, 'Description'),
+  attributes: z.record(z.string().max(40), attributeValue).optional(),
+  watts: f.numOptional({ min: 1, max: 2000, label: 'Watt' }),
+  length: f.numOptional({ min: 0.2, max: 5, label: 'Length' }),
+  width: f.numOptional({ min: 0.2, max: 5, label: 'Width' }),
+  shape: z.enum(PILLAR_SHAPES, 'Invalid shape').optional(),
+});
+export const productUpdateSchema = productSchema.partial();
+
+/* ───────────── stock ───────────── */
+
+export const supplierSchema = obj({
+  name: f.orgNameRequired,
+  phone: f.phoneOptional,
+  email: f.emailOptional,
+  gstNumber: f.gstinOptional,
+  address: f.textOptional(400, 'Address'),
+  notes: f.textOptional(500, 'Notes'),
+  categories: z.array(f.objectIdString).max(100, 'Choose up to 100 categories').optional(),
+});
+export const supplierUpdateSchema = supplierSchema.partial();
+
+const maxMfgYear = new Date().getFullYear() + 1;
+const stockDate = z.preprocess((v) => (v === '' ? null : v), z.string().refine((v) => !Number.isNaN(new Date(v).getTime()), 'Invalid date').nullable().optional());
+const batchFields = {
+  supplier: z.string('Choose the supplier').regex(/^[0-9a-fA-F]{24}$/, 'Choose the supplier'),
+  batchNo: f.textOptional(60, 'Batch number'),
+  mfgDate: stockDate,
+  mfgYear: f.numOptional({ min: 1990, max: maxMfgYear, int: true, label: 'Manufacture year' }),
+  receivedDate: stockDate,
+  purchasePrice: f.numOptional({ min: 0, max: 1e10, label: 'Purchase price' }),
+  basePrice: f.num({ min: 0, max: 1e10, label: 'Base price' }),
+  wholesalePrice: f.num({ min: 0, max: 1e10, label: 'Wholesale price' }),
+  retailPrice: f.num({ min: 0, max: 1e10, label: 'Retail price' }),
+  note: f.textOptional(300, 'Note'),
+};
+/** Receiving stock: all three selling prices are required; serialized products send their serial numbers instead of a quantity. */
+export const stockReceiveSchema = obj({
+  ...batchFields,
+  qtyReceived: f.numOptional({ min: 0, max: 1e7, label: 'Quantity' }),
+  serials: strArray(2000, 80).optional(),
+});
+export const batchUpdateSchema = obj({
+  ...batchFields,
+  qtyReceived: f.numOptional({ min: 0, max: 1e7, int: true, label: 'Quantity received' }),
+  qtyRemaining: f.numOptional({ min: 0, max: 1e7, int: true, label: 'In stock' }),
+}).partial();
+
+const packageItem = obj({ productId: f.objectIdString, qty: f.num({ min: 0, max: 1e6, label: 'Quantity' }), unit: f.textOptional(20, 'Unit') });
+export const packageSchema = obj({
+  name: f.textRequired(120, 'Package name'),
+  kw: f.numOptional({ min: 0, max: 100000, label: 'Capacity (kW)' }),
+  price: f.num({ min: 0, max: 1e10, label: 'Price' }),
+  description: f.textOptional(1000, 'Description'),
+  items: z.array(packageItem).max(100, 'A package can have up to 100 lines').optional(),
+});
+
+/* ───────────── installations ───────────── */
+
+const stepFields = {
+  name: f.textRequired(80, 'Step name'),
+  description: f.textOptional(400, 'Description'),
+  role: f.textOptional(40, 'Role'),
+  assignee: f.objectIdOrBlank,
+  priority: z.enum(STEP_PRIORITIES, 'Invalid step priority').optional(),
+};
+export const stepCreateSchema = obj(stepFields);
+export const stepUpdateSchema = obj({
+  ...stepFields,
+  status: z.enum(STEP_STATUS, 'Invalid step status').optional(),
+  move: z.enum(['up', 'down']).optional(),
+  message: f.textOptional(1000, 'Message'),
+  lat: f.lat.optional(),
+  lng: f.lng.optional(),
+}).partial();
+export const agentStepStatusSchema = obj({
+  status: z.enum(STEP_STATUS, 'Invalid step status'),
+  message: f.textOptional(1000, 'Message'),
+  lat: f.lat.optional(),
+  lng: f.lng.optional(),
+});
+export const noteSchema = obj({ message: f.textRequired(1000, 'Note') });
+export const projectStartSchema = obj({ design: f.objectIdString });
+
+/* ───────────── support tickets (fields arrive as multipart text) ───────────── */
+
+export const ticketCreateSchema = obj({
+  subject: f.textRequired(150, 'Subject').refine((v) => v.length >= 3, 'Subject must be at least 3 characters'),
+  body: f.textOptional(4000, 'Message'),
+  category: z.enum(TICKET_CATEGORIES).optional(),
+  priority: z.enum(TICKET_PRIORITIES).optional(),
+});
+/** Client support (company ↔ client); `clientId` when the company starts the conversation. */
+export const clientTicketCreateSchema = obj({
+  subject: f.textRequired(150, 'Subject').refine((v) => v.length >= 3, 'Subject must be at least 3 characters'),
+  body: f.textOptional(4000, 'Message'),
+  category: z.enum(CLIENT_TICKET_CATEGORIES).optional(),
+  priority: z.enum(TICKET_PRIORITIES).optional(),
+  clientId: z.string().optional(),
+});
+export const ticketMessageSchema = obj({ body: f.textOptional(4000, 'Message') });
+export const ticketStatusSchema = obj({ status: z.enum(TICKET_STATUS, 'Invalid ticket status') });
+
+/* ───────────── designs ───────────── */
+
+export const designCreateSchema = obj({ client: f.objectIdString, name: f.textOptional(120, 'Design name') });
+
+/* ───────────── form helper ───────────── */
+
+/** { ok, data, errors } — errors keyed by field path ('email', 'referredBy.phone'). */
+export function checkForm(schema, values) {
+  const result = schema.safeParse(values ?? {});
+  if (result.success) return { ok: true, data: result.data, errors: {} };
+  const errors = {};
+  for (const issue of result.error.issues) {
+    const key = issue.path.join('.') || '_';
+    if (!(key in errors)) errors[key] = issue.message;
+  }
+  return { ok: false, data: null, errors };
+}
+
+/**
+ * Validate a form against a schema. Nothing is shown until the first submit attempt; after that the messages
+ * follow the values live. `validate()` returns the cleaned data, or null when something is wrong.
+ *   const v = useValidation(clientSchema, form);
+ *   <FormField error={v.error('email')} …>      const data = v.validate(); if (!data) return;
+ */
+export function useValidation(schema, values) {
+  const [submitted, setSubmitted] = useState(false);
+  const live = useMemo(() => checkForm(schema, values), [schema, values]);
+  const validate = useCallback(() => {
+    setSubmitted(true);
+    return live.ok ? live.data : null;
+  }, [live]);
+  const error = useCallback((name) => (submitted ? live.errors[name] : undefined), [submitted, live]);
+  const reset = useCallback(() => setSubmitted(false), []);
+  return { validate, error, reset, errors: submitted ? live.errors : {}, valid: live.ok };
+}
