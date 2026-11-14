@@ -115,6 +115,23 @@ function Editor({ designId }) {
     const p = cat.products.find((x) => x.id === productId);
     setMaterial(cat, p ? { productId, name: p.name || [p.brand, p.model].filter(Boolean).join(' '), detail: [p.brand, p.model].filter(Boolean).join(' '), category: cat.name, hsn: p.hsnCode || '', panel: p.type === 'panels' || cat.type === 'panels' ? { brand: p.brand, model: p.model, watts: Number(p.watts) || wattsFrom(p.model, p.name), length: p.length, width: p.width, warrantyYears: p.warrantyMonths != null ? Math.floor(p.warrantyMonths / 12) : p.warrantyYears, manufactureYear: p.manufactureYear } : undefined, unit: p.unit || 'Nos', qty: quote.materials[cat.id]?.qty || 1, price: num(p.price), gstPercent: quote.materials[cat.id]?.gstPercent ?? (num(p.gstPercent) || num(quote.gstPercent) || 18) } : { productId: '' });
   };
+  const patchExtra = (i, patch) => change({ extraItems: quote.extraItems.map((x, j) => (j === i ? { ...x, ...patch } : x)) });
+  const pickExtra = (i, value) => {
+    if (value === '__custom') return patchExtra(i, { productId: '', custom: true });
+    const cat = groups.find((g) => g.products.some((p) => p.id === value));
+    const p = cat?.products.find((x) => x.id === value);
+    if (!p) return patchExtra(i, { productId: '', custom: false });
+    patchExtra(i, {
+      productId: p.id,
+      custom: false,
+      name: p.name || [p.brand, p.model].filter(Boolean).join(' '),
+      detail: [p.brand, p.model].filter(Boolean).join(' '),
+      unit: p.unit || 'Nos',
+      price: num(p.price),
+      gstPercent: p.gstPercent != null ? num(p.gstPercent) : (num(quote.gstPercent) || 18),
+      hsn: p.hsnCode || '',
+    });
+  };
 
   // debounced autosave
   useEffect(() => {
@@ -266,28 +283,41 @@ function Editor({ designId }) {
             <div className="flex flex-wrap items-center justify-between gap-2">
               <h2 className="text-sm font-semibold text-slate-900">Additional products & services</h2>
               <div className="flex flex-wrap gap-2">
-                <button type="button" onClick={() => change({ extraItems: [...(quote.extraItems || []), { name: '', detail: '', qty: 1, unit: 'Nos', price: 0, gstPercent: quote.gstPercent || 18, hsn: '' }] })} className="inline-flex items-center gap-1 text-xs font-semibold text-brand hover:underline"><Plus className="h-3.5 w-3.5" />Add product</button>
+                <button type="button" onClick={() => change({ extraItems: [...(quote.extraItems || []), { productId: '', custom: false, name: '', detail: '', qty: 1, unit: 'Nos', price: 0, gstPercent: quote.gstPercent || 18, hsn: '' }] })} className="inline-flex items-center gap-1 text-xs font-semibold text-brand hover:underline"><Plus className="h-3.5 w-3.5" />Add product</button>
                 <button type="button" onClick={() => change({ installationCharges: [...(quote.installationCharges || []), emptyInstallationCharge()] })} className="inline-flex items-center gap-1 text-xs font-semibold text-brand hover:underline"><Plus className="h-3.5 w-3.5" />Add service</button>
               </div>
             </div>
             <div>
               <p className="mb-2 text-xs font-medium text-slate-700">Products</p>
               {!(quote.extraItems || []).length ? (
-                <p className="text-xs text-slate-500">Optional catalog-style lines (AMC, transport, accessories, etc.) with qty, price, and {taxName()}.</p>
+                <p className="text-xs text-slate-500">Pick from your catalog (or type a custom name) for optional lines like AMC, transport, accessories — with qty, price, and {taxName()}.</p>
               ) : (
                 <div className="space-y-3">
                   {(quote.extraItems || []).map((it, i) => (
                     <div key={i} className="rounded-lg border border-slate-200 p-3">
                       <div className="mb-2 flex gap-2">
-                        <Input maxLength={160} value={it.name} onValue={(v) => change({ extraItems: quote.extraItems.map((x, j) => (j === i ? { ...x, name: v } : x)) })} placeholder="Name" className="flex-1" />
-                        <button type="button" aria-label="Remove" onClick={() => change({ extraItems: quote.extraItems.filter((_, j) => j !== i) })} className="grid h-9 w-8 place-items-center rounded-md text-slate-400 hover:bg-red-50 hover:text-red-600"><X className="h-4 w-4" /></button>
+                        <div className="min-w-0 flex-1 space-y-1.5">
+                          <select aria-label="Product" value={it.custom || (!it.productId && it.name) ? '__custom' : it.productId || ''} onChange={(e) => pickExtra(i, e.target.value)} className={selectCls}>
+                            <option value="">{groups.length ? 'Choose a product…' : 'No products in catalog'}</option>
+                            {groups.map((cat) => (
+                              <optgroup key={cat.id} label={cat.name}>
+                                {cat.products.map((p) => (
+                                  <option key={p.id} value={p.id}>{p.name || [p.brand, p.model].filter(Boolean).join(' ')} ({money(p.price)}{p.unit ? `/${p.unit}` : ''})</option>
+                                ))}
+                              </optgroup>
+                            ))}
+                            <option value="__custom">Other (type a name)</option>
+                          </select>
+                          {(it.custom || (!it.productId && it.name)) && <Input maxLength={160} value={it.name} onValue={(v) => patchExtra(i, { name: v, custom: true })} placeholder="Product name" className="w-full" />}
+                        </div>
+                        <button type="button" aria-label="Remove" onClick={() => change({ extraItems: quote.extraItems.filter((_, j) => j !== i) })} className="grid h-9 w-8 shrink-0 place-items-center rounded-md text-slate-400 hover:bg-red-50 hover:text-red-600"><X className="h-4 w-4" /></button>
                       </div>
                       <div className="grid grid-cols-2 gap-2 sm:grid-cols-5">
-                        <label className="text-[11px] text-slate-600">Qty<NumField min={0} step="any" value={it.qty} onValue={(v) => change({ extraItems: quote.extraItems.map((x, j) => (j === i ? { ...x, qty: v } : x)) })} className={inputCls} /></label>
-                        <label className="text-[11px] text-slate-600">Unit<Input maxLength={20} value={it.unit} onValue={(v) => change({ extraItems: quote.extraItems.map((x, j) => (j === i ? { ...x, unit: v } : x)) })} className="mt-1 h-9 w-full rounded-md border border-slate-300 px-2 text-xs" /></label>
-                        <label className="text-[11px] text-slate-600">Price ({currency})<NumField min={0} step="any" value={it.price} onValue={(v) => change({ extraItems: quote.extraItems.map((x, j) => (j === i ? { ...x, price: v } : x)) })} className={inputCls} /></label>
-                        <label className="text-[11px] text-slate-600">{taxName()} %<NumField min={0} max={100} step="any" value={it.gstPercent ?? quote.gstPercent} onValue={(v) => change({ extraItems: quote.extraItems.map((x, j) => (j === i ? { ...x, gstPercent: v } : x)) })} className={inputCls} /></label>
-                        <label className="text-[11px] text-slate-600">HSN<Input maxLength={20} value={it.hsn} onValue={(v) => change({ extraItems: quote.extraItems.map((x, j) => (j === i ? { ...x, hsn: v } : x)) })} className="mt-1 h-9 w-full rounded-md border border-slate-300 px-2 text-xs" /></label>
+                        <label className="text-[11px] text-slate-600">Qty<NumField min={0} step="any" value={it.qty} onValue={(v) => patchExtra(i, { qty: v })} className={inputCls} /></label>
+                        <label className="text-[11px] text-slate-600">Unit<Input maxLength={20} value={it.unit} onValue={(v) => patchExtra(i, { unit: v })} className="mt-1 h-9 w-full rounded-md border border-slate-300 px-2 text-xs" /></label>
+                        <label className="text-[11px] text-slate-600">Price ({currency})<NumField min={0} step="any" value={it.price} onValue={(v) => patchExtra(i, { price: v })} className={inputCls} /></label>
+                        <label className="text-[11px] text-slate-600">{taxName()} %<NumField min={0} max={100} step="any" value={it.gstPercent ?? quote.gstPercent} onValue={(v) => patchExtra(i, { gstPercent: v })} className={inputCls} /></label>
+                        <label className="text-[11px] text-slate-600">HSN<Input maxLength={20} value={it.hsn} onValue={(v) => patchExtra(i, { hsn: v })} className="mt-1 h-9 w-full rounded-md border border-slate-300 px-2 text-xs" /></label>
                       </div>
                     </div>
                   ))}
