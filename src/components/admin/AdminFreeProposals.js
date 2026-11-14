@@ -4,13 +4,14 @@
 // signing in. Each is a lead for the platform: the solar company that made it, the proposal itself, the device
 // they used and where they were. These are kept on their own and are no part of any company's workspace.
 import { Download, Eye, FileText, Mail, MapPin, Monitor, Phone, Smartphone, Tablet, Trash2 } from 'lucide-react';
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { api } from '@/lib/api';
 import { formatMoney } from '@/lib/energy';
 import { lineAmount, taxLabel } from '@/lib/freeProposalCalc';
-import { useResource } from '@/lib/useResource';
-import { Alert, Badge, Button, Card, ConfirmDialog, EmptyState, IconButton, LoadingBlock, Modal, PageHeader, RichTextContent, Select, Table, Td, Textarea, Th, Tr, formatDate, timeAgo, toast } from '../kit';
+import { usePaginatedResource } from '@/lib/useResource';
+import { Alert, Badge, Button, Card, ConfirmDialog, EmptyState, IconButton, LoadingBlock, Modal, PageHeader, RichTextContent, Select, Table, TablePagination, Td, Textarea, Th, Tr, formatDate, timeAgo, toast } from '../kit';
 
+const PAGE_SIZE = 20;
 const STATUS = {
   new: { tone: 'amber', label: 'New' },
   contacted: { tone: 'blue', label: 'Contacted' },
@@ -161,16 +162,21 @@ function Details({ id, onClose, onSaved }) {
 }
 
 export default function AdminFreeProposals() {
-  const { data, setData, loading, error } = useResource('/api/admin/free-proposals');
   const [open, setOpen] = useState(null);
   const [removing, setRemoving] = useState(null);
   const [busy, setBusy] = useState(false);
   const [filter, setFilter] = useState('');
+  const listPath = useMemo(() => {
+    const qs = new URLSearchParams(filter ? { status: filter } : {}).toString();
+    return `/api/admin/free-proposals${qs ? `?${qs}` : ''}`;
+  }, [filter]);
+  const { items, setItems, loading, error, total, page, setPage, totalPages, reload } = usePaginatedResource(listPath, { limit: PAGE_SIZE });
 
-  const replace = (row) => setData((list) => list.map((r) => (r.id === row.id ? { ...r, ...row } : r)));
+  const replace = (row) => setItems((list) => list.map((r) => (r.id === row.id ? { ...r, ...row } : r)));
   const setStatus = async (row, status) => {
     try {
       replace(await api(`/api/admin/free-proposals/${row.id}`, { method: 'PATCH', body: { status } }));
+      if (filter && status !== filter) reload();
     } catch (err) {
       toast.error(err.message);
     }
@@ -179,16 +185,15 @@ export default function AdminFreeProposals() {
     setBusy(true);
     try {
       await api(`/api/admin/free-proposals/${removing.id}`, { method: 'DELETE' });
-      setData((list) => list.filter((r) => r.id !== removing.id));
       toast.success('Removed');
       setRemoving(null);
+      if (items.length <= 1 && page > 1) setPage(page - 1);
+      else reload();
     } catch (err) {
       toast.error(err.message);
     }
     setBusy(false);
   };
-
-  const rows = (data || []).filter((r) => !filter || r.status === filter);
 
   return (
     <>
@@ -200,13 +205,13 @@ export default function AdminFreeProposals() {
       </PageHeader>
       {error && <Alert className="mb-6">{error}</Alert>}
       <Card className="overflow-hidden">
-        {loading && !data ? <LoadingBlock /> : !rows.length ? (
-          <EmptyState icon={FileText} title={data?.length ? 'Nothing with this status' : 'No free proposals yet'} description={data?.length ? 'Choose another status above.' : 'When someone makes a proposal with the free proposal maker, it appears here with their device and location.'} />
+        {loading && !items.length ? <LoadingBlock /> : !items.length ? (
+          <EmptyState icon={FileText} title={filter ? 'Nothing with this status' : 'No free proposals yet'} description={filter ? 'Choose another status above.' : 'When someone makes a proposal with the free proposal maker, it appears here with their device and location.'} />
         ) : (
           <Table>
             <thead><tr><Th>Company &amp; contact</Th><Th>Proposal</Th><Th>Device</Th><Th>Location</Th><Th>Received</Th><Th>Status</Th><Th className="text-right">Actions</Th></tr></thead>
             <tbody>
-              {rows.map((r) => {
+              {items.map((r) => {
                 const s = STATUS[r.status] || STATUS.new;
                 const DeviceIcon = DEVICE_ICON[r.device?.type] || Monitor;
                 const link = mapLink(r.location);
@@ -265,6 +270,7 @@ export default function AdminFreeProposals() {
             </tbody>
           </Table>
         )}
+        <TablePagination page={page} totalPages={totalPages} total={total} pageSize={PAGE_SIZE} onPageChange={setPage} className="border-t border-slate-100" />
       </Card>
       {open && <Details id={open} onClose={() => setOpen(null)} onSaved={replace} />}
       <ConfirmDialog open={Boolean(removing)} onClose={() => setRemoving(null)} onConfirm={remove} busy={busy} title={`Remove ${removing?.companyName || 'this'} free proposal?`} confirmLabel="Remove">

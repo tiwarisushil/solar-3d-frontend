@@ -2,11 +2,12 @@
 
 // Super admin: messages from the public landing page's Contact Us form. Each is a lead to call back.
 import { Eye, Mail, MessageSquare, Phone, Trash2 } from 'lucide-react';
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { api } from '@/lib/api';
-import { useResource } from '@/lib/useResource';
-import { Alert, Badge, Button, Card, ConfirmDialog, EmptyState, IconButton, LoadingBlock, Modal, PageHeader, Select, Table, Td, Textarea, Th, Tr, formatDate, timeAgo, toast } from '../kit';
+import { usePaginatedResource } from '@/lib/useResource';
+import { Alert, Badge, Button, Card, ConfirmDialog, EmptyState, IconButton, LoadingBlock, Modal, PageHeader, Select, Table, TablePagination, Td, Textarea, Th, Tr, formatDate, timeAgo, toast } from '../kit';
 
+const PAGE_SIZE = 20;
 const STATUS = {
   new: { tone: 'amber', label: 'New' },
   contacted: { tone: 'blue', label: 'Contacted' },
@@ -67,16 +68,21 @@ function Details({ id, onClose, onSaved }) {
 }
 
 export default function AdminContactMessages() {
-  const { data, setData, loading, error } = useResource('/api/admin/contact-messages');
   const [open, setOpen] = useState(null);
   const [removing, setRemoving] = useState(null);
   const [busy, setBusy] = useState(false);
   const [filter, setFilter] = useState('');
+  const listPath = useMemo(() => {
+    const qs = new URLSearchParams(filter ? { status: filter } : {}).toString();
+    return `/api/admin/contact-messages${qs ? `?${qs}` : ''}`;
+  }, [filter]);
+  const { items, setItems, loading, error, total, page, setPage, totalPages, reload } = usePaginatedResource(listPath, { limit: PAGE_SIZE });
 
-  const replace = (row) => setData((list) => list.map((r) => (r.id === row.id ? { ...r, ...row } : r)));
+  const replace = (row) => setItems((list) => list.map((r) => (r.id === row.id ? { ...r, ...row } : r)));
   const setStatus = async (row, status) => {
     try {
       replace(await api(`/api/admin/contact-messages/${row.id}`, { method: 'PATCH', body: { status } }));
+      if (filter && status !== filter) reload();
     } catch (err) {
       toast.error(err.message);
     }
@@ -85,16 +91,15 @@ export default function AdminContactMessages() {
     setBusy(true);
     try {
       await api(`/api/admin/contact-messages/${removing.id}`, { method: 'DELETE' });
-      setData((list) => list.filter((r) => r.id !== removing.id));
       toast.success('Removed');
       setRemoving(null);
+      if (items.length <= 1 && page > 1) setPage(page - 1);
+      else reload();
     } catch (err) {
       toast.error(err.message);
     }
     setBusy(false);
   };
-
-  const rows = (data || []).filter((r) => !filter || r.status === filter);
 
   return (
     <>
@@ -106,13 +111,13 @@ export default function AdminContactMessages() {
       </PageHeader>
       {error && <Alert className="mb-6">{error}</Alert>}
       <Card className="overflow-hidden">
-        {loading && !data ? <LoadingBlock /> : !rows.length ? (
-          <EmptyState icon={MessageSquare} title={data?.length ? 'Nothing with this status' : 'No contact messages yet'} description={data?.length ? 'Choose another status above.' : 'When someone sends the Contact Us form on the landing page, it appears here.'} />
+        {loading && !items.length ? <LoadingBlock /> : !items.length ? (
+          <EmptyState icon={MessageSquare} title={filter ? 'Nothing with this status' : 'No contact messages yet'} description={filter ? 'Choose another status above.' : 'When someone sends the Contact Us form on the landing page, it appears here.'} />
         ) : (
           <Table>
             <thead><tr><Th>Name</Th><Th>Contact</Th><Th>Company</Th><Th>Message</Th><Th>Received</Th><Th>Status</Th><Th className="text-right">Actions</Th></tr></thead>
             <tbody>
-              {rows.map((r) => {
+              {items.map((r) => {
                 const s = STATUS[r.status] || STATUS.new;
                 return (
                   <Tr key={r.id}>
@@ -146,6 +151,7 @@ export default function AdminContactMessages() {
             </tbody>
           </Table>
         )}
+        <TablePagination page={page} totalPages={totalPages} total={total} pageSize={PAGE_SIZE} onPageChange={setPage} className="border-t border-slate-100" />
       </Card>
       {open && <Details id={open} onClose={() => setOpen(null)} onSaved={replace} />}
       <ConfirmDialog open={Boolean(removing)} onClose={() => setRemoving(null)} onConfirm={remove} busy={busy} title={`Remove message from ${removing?.name || 'this person'}?`} confirmLabel="Remove">
