@@ -20,7 +20,7 @@ import PreviousStaffCell from './PreviousStaffCell';
 import PreviouslyYoursBadge from './PreviouslyYoursBadge';
 import ReassignedMark from './ReassignedMark';
 import { SCHEDULE_OPTIONS } from '@/lib/leadSchedule';
-import { Alert, Badge, Button, Card, EmptyState, FilterNotice, FormField, LoadingBlock, PageHeader, Select, Table, TablePagination, Td, Th, Tr, capName, cx, formatDate, toast } from '../kit';
+import { Alert, Badge, Button, Card, DateRangeFilter, EmptyState, FilterNotice, FormField, LoadingBlock, PageHeader, Select, Table, TablePagination, Td, Th, Tr, capName, cx, formatDate, toast } from '../kit';
 import LeadSourceTabs from '@/components/leads/LeadSourceTabs';
 
 const PAGE_SIZE = 20;
@@ -45,7 +45,7 @@ function linkedLabel(f, statuses, assignees) {
   if (f.fromDate) return `leads that came in since ${formatDate(f.fromDate)}`;
   return '';
 }
-const EMPTY_FILTERS = { search: '', assignedTo: '', statusId: '', source: '', priority: '', schedule: '', includePast: '', fromDate: '', toDate: '', pageId: '', formId: '' };
+const EMPTY_FILTERS = { search: '', assignedTo: '', statusId: '', source: '', priority: '', schedule: '', includePast: '', fromDate: '', toDate: '', pageId: '', formId: '', scheduleFrom: '', scheduleTo: '' };
 const STATUS_TONE = { amber: 'amber', blue: 'blue', purple: 'violet', violet: 'violet', rose: 'red', red: 'red', emerald: 'green', green: 'green', slate: 'slate' };
 const SOURCE_TONE = { meta: 'blue', google: 'amber', manual: 'slate', import: 'violet' };
 
@@ -69,6 +69,9 @@ export default function AllLeads() {
 
   const [filters, setFilters] = useState(() => ({ ...EMPTY_FILTERS, ...linkedFilters(params) }));
   const [linked, setLinked] = useState(() => Object.keys(linkedFilters(params)).length > 0); // opened from a dashboard link
+  // the date filter for a status that asks for a date (callback, site visit…); hidden for other statuses
+  const selectedStatus = statuses.find((s) => s._id === filters.statusId);
+  const scheduleDateOn = Boolean(selectedStatus?.requiresDate);
   const metaForms = useMemo(() => {
     const forms = metaFiltersRes.data?.forms || [];
     if (!filters.pageId) return forms;
@@ -97,6 +100,8 @@ export default function AllLeads() {
     if (filters.source) params.set('source', filters.source);
     if (filters.priority) params.set('priority', filters.priority);
     if (filters.schedule) params.set('schedule', filters.schedule);
+    if (scheduleDateOn && filters.scheduleFrom) params.set('scheduleFrom', filters.scheduleFrom);
+    if (scheduleDateOn && filters.scheduleTo) params.set('scheduleTo', filters.scheduleTo);
     if (filters.includePast) params.set('includePast', '1');
     if (filters.fromDate) params.set('from', filters.fromDate);
     if (filters.toDate) params.set('to', filters.toDate);
@@ -108,7 +113,7 @@ export default function AllLeads() {
     } catch (e) {
       setState((s) => ({ ...s, loading: false, error: e.message }));
     }
-  }, [filters, page, showMetaFilters]);
+  }, [filters, page, showMetaFilters, scheduleDateOn]);
   useEffect(() => { load(); }, [load]);
 
   const setFilter = (k) => (v) => {
@@ -143,6 +148,7 @@ export default function AllLeads() {
     filters.schedule,
     filters.fromDate,
     filters.toDate,
+    scheduleDateOn && (filters.scheduleFrom || filters.scheduleTo) ? 'date' : '',
     showMetaFilters && filters.pageId,
     showMetaFilters && filters.formId,
   ].filter(Boolean).length;
@@ -213,12 +219,22 @@ export default function AllLeads() {
           </FormField>
         )}
         <FormField label="Status">
-          <Select aria-label="Status" value={filters.statusId} onValue={setFilter('statusId')}>
+          <Select aria-label="Status" value={filters.statusId} onValue={(v) => { setFilters((f) => ({ ...f, statusId: v, scheduleFrom: '', scheduleTo: '' })); setPage(1); setLinked(false); }}>
             <option value="">Any status</option>
             <option value="none">Not started</option>
             {statuses.map((s) => <option key={s._id} value={s._id}>{s.name}</option>)}
           </Select>
         </FormField>
+        {scheduleDateOn && (
+          <div className="sm:col-span-2">
+            <DateRangeFilter
+              label={`${selectedStatus.name} date`}
+              from={filters.scheduleFrom}
+              to={filters.scheduleTo}
+              onChange={({ from, to }) => { setFilters((f) => ({ ...f, scheduleFrom: from, scheduleTo: to })); setPage(1); }}
+            />
+          </div>
+        )}
         <FormField label="Priority">
           <Select aria-label="Priority" value={filters.priority} onValue={setFilter('priority')}>
             {PRIORITY_FILTER_OPTIONS.map((o) => <option key={o.value || 'all'} value={o.value}>{o.label}</option>)}

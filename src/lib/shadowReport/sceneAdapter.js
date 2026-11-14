@@ -4,7 +4,7 @@
 
 import * as THREE from 'three';
 import { buildingIdOf } from '../buildings.js';
-import { ridgeHeight, roofHeightAt } from '../model.js';
+import { blockOutline, ridgeHeight, roofHeightAt } from '../model.js';
 
 /** `userData` flag Scene3D puts on the instanced meshes that draw the (valid) solar panels. */
 export const PANEL_MESH_TAG = 'solarPanels';
@@ -122,10 +122,13 @@ export function designBounds(design) {
     }
   }
   for (const b of design.blocks) {
-    const base = roofHeightAt(design.sections, b.x, b.y);
-    const r = Math.hypot(b.w, b.d) / 2;
-    add(b.x - r, base, b.y - r);
-    add(b.x + r, base + b.h, b.y + r);
+    const outline = blockOutline(b);
+    const c = outline.reduce((s, p) => ({ x: s.x + p.x / outline.length, y: s.y + p.y / outline.length }), { x: 0, y: 0 });
+    const base = roofHeightAt(design.sections, c.x, c.y);
+    for (const p of outline) {
+      add(p.x, base, p.y);
+      add(p.x, base + b.h, p.y);
+    }
   }
   for (const t of design.trees) {
     const base = roofHeightAt(design.sections, t.x, t.y);

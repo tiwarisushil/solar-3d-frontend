@@ -29,6 +29,12 @@ export function proposalBomRows(design) {
     }
     for (const m of cost.categoryMaterials || []) add(m.parentName, m.parentOrder, m.categoryName, m.productName, m.qty, m.unit || 'nos', m.total);
   }
+  // products added by hand: listed with the package or the chosen materials, whichever pricing is used
+  const EXTRA = { group: 'Additional products', order: 1e9 - 2 };
+  for (const x of cost.extraItems || []) {
+    const qty = Number(x.qty) || 1;
+    add(EXTRA.group, EXTRA.order, x.name, x.detail || 'Additional product', qty, x.unit || 'Nos', qty * (Number(x.price) || 0));
+  }
   if (Number(cost.floorCost) > 0) add(CHARGES.group, CHARGES.order, 'Floor placement', cost.floorPlacement === 0 ? 'Ground level' : `Floor ${cost.floorPlacement} installation surcharge`, 1, 'nos', cost.floorCost);
   for (const c of cost.installationCharges || []) add(CHARGES.group, CHARGES.order, c.name, 'Installation charge', 1, 'nos', c.price);
   // a stable key per line (for lists)
@@ -83,6 +89,7 @@ function howOf(row, design, money) {
   if (row.item.startsWith('Package:')) return 'The price of the chosen package';
   const rule = RULES.find(([re]) => re.test(row.item));
   if (rule) return rule[1](design);
+  if (row.group === 'Additional products') return 'Added under Additional products';
   if (cost.isPackage) return 'Part of the package';
   return '';
 }

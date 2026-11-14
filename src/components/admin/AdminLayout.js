@@ -1,6 +1,6 @@
 'use client';
 
-import { Building2, ClipboardCheck, CreditCard, FileText, LifeBuoy, LayoutDashboard, UserCog } from 'lucide-react';
+import { Building2, ClipboardCheck, CreditCard, FileText, LifeBuoy, LayoutDashboard, MessageSquare, UserCog } from 'lucide-react';
 import AppShell from '../layout/AppShell';
 import AuthGuard from '../layout/AuthGuard';
 
@@ -12,6 +12,7 @@ const NAV = [
       { href: '/admin/plans', label: 'Plans', icon: CreditCard },
       { href: '/admin/plan-requests', label: 'Plan requests', icon: ClipboardCheck },
       { href: '/admin/free-proposals', label: 'Free proposals', icon: FileText }, // leads from the public site
+      { href: '/admin/contact-messages', label: 'Contact messages', icon: MessageSquare }, // Contact Us form on the landing page
       { href: '/admin/support', label: 'Support', icon: LifeBuoy },
     ],
   },

@@ -4,15 +4,17 @@ import ProposalEditModal from './ProposalEditModal';
 import { Copy, FileText, HardHat, History, MapPin, PenLine, PenTool, Plus, ReceiptText, Search, Trash2 } from 'lucide-react';
 import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { api } from '@/lib/api';
 import { can, canView } from '@/lib/permissions';
 import { formatMoney } from '@/lib/energy';
 import { generateLifecyclePdf } from '@/lib/lifecyclePdf';
 import { useSession } from '@/lib/session';
-import { useResource, usePagedResource } from '@/lib/useResource';
+import { useResource, usePaginatedResource } from '@/lib/useResource';
 import { withDateRange } from '@/lib/listDates';
-import { Alert, Button, Card, ConfirmDialog, DateRangeFilter, EmptyState, FilterNotice, Input, LoadMoreRow, LoadingBlock, PageHeader, RowMenu, Select, Table, Td, Th, Tr, buttonClass, capName, timeAgo, toast } from '../kit';
+import { Alert, Button, Card, ConfirmDialog, DateRangeFilter, EmptyState, FilterNotice, Input, LoadingBlock, PageHeader, RowMenu, Select, Table, TablePagination, Td, Th, Tr, buttonClass, capName, timeAgo, toast } from '../kit';
+
+const PAGE_SIZE = 10;
 import { DESIGN_STATUSES, DesignStatusBadge, NewDesignModal, designHref } from './shared';
 import { ClientChangeRequestsSection } from './ClientChangeRequestPanel';
 
@@ -44,27 +46,35 @@ export default function Designs({ basePath = '/dashboard/designs', installations
   const canStartTask = can(me, 'tasks', 'create');
   const clientId = params.get('client') || 'all';
   const show = SHOWS[params.get('show')] ? params.get('show') : '';
+  const [status, setStatus] = useState(() => (DESIGN_STATUSES.some((s) => s.id === params.get('status')) ? params.get('status') : 'all')); // ?status= from a dashboard link
+  const [query, setQuery] = useState('');
+  const [debouncedQuery, setDebouncedQuery] = useState('');
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedQuery(query.trim()), 300);
+    return () => clearTimeout(t);
+  }, [query]);
   const [addedFrom, setAddedFrom] = useState('');
   const [addedTo, setAddedTo] = useState('');
   const listPath = useMemo(() => {
-    const query = new URLSearchParams({ ...(clientId !== 'all' && { client: clientId }), ...(show && { show }) }).toString();
+    const query = new URLSearchParams({
+      ...(clientId !== 'all' && { client: clientId }),
+      ...(show && { show }),
+      ...(status !== 'all' && { status }),
+      ...(debouncedQuery && { q: debouncedQuery }),
+    }).toString();
     return withDateRange(`/api/designs${query ? `?${query}` : ''}`, addedFrom, addedTo);
-  }, [clientId, show, addedFrom, addedTo]);
-  const { items: data, setItems: setData, loading, error, hasMore, loadingMore, loadMore, total } = usePagedResource(listPath, { limit: 100 });
+  }, [clientId, show, status, debouncedQuery, addedFrom, addedTo]);
+  const { items: data, setItems: setData, loading, error, total, page, setPage, totalPages } = usePaginatedResource(listPath, { limit: PAGE_SIZE });
   const clients = useResource(canViewClients ? '/api/clients?limit=500' : null);
   const clientList = clients.data?.items || [];
-  const [query, setQuery] = useState('');
   const [editingProposal, setEditingProposal] = useState(null); // the proposal open in the Edit proposal dialog
-  const [status, setStatus] = useState(() => (DESIGN_STATUSES.some((s) => s.id === params.get('status')) ? params.get('status') : 'all')); // ?status= from a dashboard link
   const [modal, setModal] = useState(null);
   const [busy, setBusy] = useState(false);
   const [modalError, setModalError] = useState('');
   const dateFiltered = Boolean(addedFrom && addedTo);
 
-  const rows = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    return (data || []).filter((d) => (status === 'all' || d.status === status) && (clientId === 'all' || d.client?.id === clientId) && (!q || `${d.name} ${d.proposalNo || ''} ${d.client?.name} ${d.summary?.address}`.toLowerCase().includes(q)));
-  }, [data, query, status, clientId]);
+  // search, status and client are applied by the server, so `data` is already the filtered page
+  const rows = data || [];
 
   // each proposal from the server says whether it has an installation (no need to load every installation)
   const installationOf = useMemo(() => new Map((data || []).filter((d) => d.installationId).map((d) => [d.id, d.installationId])), [data]);
@@ -204,7 +214,7 @@ export default function Designs({ basePath = '/dashboard/designs', installations
             </tbody>
           </Table>
         )}
-        <LoadMoreRow hasMore={hasMore} loadingMore={loadingMore} onClick={loadMore} loaded={data?.length || 0} total={total} />
+        <TablePagination page={page} totalPages={totalPages} total={total} pageSize={PAGE_SIZE} onPageChange={setPage} className="border-t border-slate-100" />
       </Card>
 
       {modal?.type === 'new' && <NewDesignModal clients={clientList} clientId={clientId !== 'all' ? clientId : undefined} onClose={close} />}

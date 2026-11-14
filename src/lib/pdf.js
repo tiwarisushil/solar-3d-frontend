@@ -17,8 +17,7 @@ import { validUntilText } from './validity.js';
 import { formatMoney, formatNumber } from './energy.js';
 import { pricingFromQuote } from './pricing.js';
 import { compassLabel } from './geo.js';
-import { rectPoly } from './geometry.js';
-import { PATH_COLORS, ridgeSegment, roofShapeLabel } from './model.js';
+import { blockOutline, PATH_COLORS, ridgeSegment, roofShapeLabel } from './model.js';
 import { drawRichText, richTextIsEmpty } from './pdfRichText.js';
 import { drawSldSheet, sldSchedule, sldSheets } from './pdfSld.js'; // sldSchedule: the quote PDF's schedule
 import { appendShadowReport } from './shadowReport/shadowReportPdf.js';
@@ -274,7 +273,7 @@ function drawLayout(doc, r, design, x, y, w, h, colorStrings) {
   doc.setDrawColor(...MUTED);
   for (const bl of design.blocks) {
     doc.setFillColor(...LINE);
-    poly(doc, rectPoly(bl.x, bl.y, bl.w, bl.d, bl.rot || 0).map(map), 'FD');
+    poly(doc, blockOutline(bl).map(map), 'FD');
   }
   for (const t of design.trees) {
     const c = map(t);

@@ -237,6 +237,11 @@ export function useDesign() {
     for (const c of installationCharges) {
       restLines.push({ name: c.name, detail: 'Installation charge', qty: 1, unit: 'Nos', rate: Number(c.price) || 0, gstPercent: installChargeGstPercent(c, defGst), hsn: c.hsnCode || c.hsn || c.sac || '' });
     }
+    // products added by hand: on top of a package's products too
+    const extraItems = (Array.isArray(config.extraItems) ? config.extraItems : []).filter((x) => x?.name);
+    for (const x of extraItems) {
+      restLines.push({ name: x.name, detail: x.detail || 'Additional product', qty: Number(x.qty) || 1, unit: x.unit || 'Nos', rate: Number(x.price) || 0, gstPercent: x.gstPercent != null && x.gstPercent !== '' ? Number(x.gstPercent) : defGst, hsn: x.hsn || '' });
+    }
 
     const allLines = [...materialLines, ...restLines];
     const priced = summarizeLinePricing({ lines: allLines, gstIncluded: false, withGst: applyGst, discount: config.discount || 0, discountIsPercent: Boolean(config.discountIsPercent) });
@@ -292,6 +297,7 @@ export function useDesign() {
       floorPlacement: Number(config.floorPlacement) || 0,
       floorCost,
       installationCharges,
+      extraItems,
       installTotal,
       lineSubtotal: priced.subtotal,
       ...gst,

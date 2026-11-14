@@ -2,7 +2,7 @@
 
 // One friendly screen for home owners: see the roof in 3D, pick how many panels, done.
 
-import { AlertCircle, Box, Boxes, Building2, CalendarDays, Check, ChevronDown, Cylinder, DoorOpen, Eraser, Fence, FileText, Grid2x2Plus, Grid2x2X, Keyboard, Landmark, Loader2, Minus, Move, Package, Plus, ReceiptText, Sparkles, SquareDashed, Trash2, TreePine, Undo2, Wrench } from 'lucide-react';
+import { AlertCircle, Box, Boxes, Building2, CalendarDays, Check, ChevronDown, Cylinder, DoorOpen, Eraser, Fence, FileText, Grid2x2Plus, Grid2x2X, Keyboard, Landmark, Loader2, Minus, Move, Package, Plus, ReceiptText, Sparkles, SquareDashed, Trash2, TreePine, Undo2, Warehouse, Wrench } from 'lucide-react';
 import dynamic from 'next/dynamic';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
@@ -11,9 +11,9 @@ import { applyMaxLayout, autoGroups, basesCapacity, clearBases, designedBases, m
 import { capFirst } from '@/lib/catalog';
 import { formatMoney } from '@/lib/energy';
 import { buildingList, mainSection, sectionsOf } from '@/lib/buildings';
-import { compassLabel, normalizeAzimuth } from '@/lib/geo';
-import { edges } from '@/lib/geometry';
-import { baseFit, baseFor, buildDesign, MAX_SUPPORTS, normSection, zonesForSection } from '@/lib/model';
+import { azimuthsMatch, compassLabel, edgeOutwardAz, normalizeAzimuth } from '@/lib/geo';
+import { edges, polygonArea } from '@/lib/geometry';
+import { baseFit, baseFor, buildDesign, MAX_SUPPORTS, normSection, roofClearance, shedLowBearings, snapSlopeAz, zonesForSection } from '@/lib/model';
 import { sceneApi } from '../scene/Scene3D';
 import { floorsOf, restyleRoof, ROOF_STYLES, roofStyleOf, setFloors, setGround } from '@/lib/solarModel';
 import { SIMPLE_SLUGS, useStore } from '@/lib/store';
@@ -87,11 +87,62 @@ function Pills({ value, options, onChange }) {
   );
 }
 
+/** Single-slope: low edge must be a real wall; step through wall bearings (ridge is always opposite). */
+function ShedFallDirection({ section, bearings }) {
+  const low = Math.round(normSection(section).slopeAz ?? bearings[0] ?? 180);
+  const ridge = Math.round(normalizeAzimuth(low + 180));
+  const idx = Math.max(0, bearings.findIndex((b) => azimuthsMatch(b, low)));
+  const commit = (az) => {
+    const poly = normSection({ ...section, roofType: 'flat' }).poly;
+    const snapped = snapSlopeAz(poly, az);
+    const { sections, set } = useStore.getState();
+    set({ sections: sections.map((sec) => (sec.id === section.id ? { ...sec, slopeAz: snapped, slopeAzSnap: true } : sec)), layoutKey: '' });
+  };
+  // older designs may hold a bearing between walls (e.g. 74° ENE) — snap on load
+  useEffect(() => {
+    const snapped = normSection(section).slopeAz;
+    if (snapped != null && section.slopeAz != null && !azimuthsMatch(section.slopeAz, snapped)) commit(snapped);
+  }, [section.id, section.slopeAz, section.points, section.roofType]); // eslint-disable-line react-hooks/exhaustive-deps
+  const step = (dir) => commit(bearings[(idx + dir + bearings.length) % bearings.length]);
+  const ridgeAz = snapSlopeAz(normSection({ ...section, roofType: 'flat' }).poly, ridge);
+  return (
+    <div className="rounded-lg border border-slate-200 bg-slate-50/80 p-3">
+      <p className="text-sm font-medium text-slate-700">
+        Fall direction · <b className="text-slate-900">{low}°</b> ({compassLabel(low)} low edge)
+      </p>
+      {bearings.length > 1 && (
+        <input
+          type="range"
+          min={0}
+          max={bearings.length - 1}
+          step={1}
+          value={idx}
+          onChange={(e) => commit(bearings[Number(e.target.value)])}
+          className="mt-2 w-full accent-brand"
+          aria-label="Fall direction along building walls"
+        />
+      )}
+      <div className="mt-2 flex flex-wrap gap-1.5">
+        {bearings.length > 1 && (
+          <>
+            <button type="button" onClick={() => step(-1)} className="h-8 rounded-md border border-slate-200 bg-white px-2.5 text-sm font-semibold text-slate-700 hover:bg-slate-100">Prev wall</button>
+            <button type="button" onClick={() => step(1)} className="h-8 rounded-md border border-slate-200 bg-white px-2.5 text-sm font-semibold text-slate-700 hover:bg-slate-100">Next wall</button>
+          </>
+        )}
+        <button type="button" onClick={() => commit(ridgeAz)} title="Put the ridge on this wall instead" className="h-8 rounded-md border border-slate-200 bg-white px-2.5 text-sm font-medium text-slate-600 hover:bg-slate-100">
+          Flip · ridge {compassLabel(ridgeAz)}
+        </button>
+      </div>
+      <p className="mt-2 text-xs text-slate-500">Low edge is always a full wall ({low}°); ridge is opposite ({compassLabel(ridgeAz)}). In-between directions like ENE are not used.</p>
+    </div>
+  );
+}
+
 function Chips({ value, options, onChange }) {
   return (
     <div className="flex flex-wrap gap-1.5">
       {options.map(([v, label]) => (
-        <button key={label} type="button" onClick={() => onChange(v)} className={cx('rounded-full border px-3 py-1 text-sm font-medium', Math.abs(value - v) < 0.01 ? 'border-brand bg-brand-soft text-brand-ink' : 'border-slate-200 text-slate-600 hover:bg-slate-50')}>
+        <button key={label} type="button" onClick={() => onChange(v)} className={cx('rounded-full border px-3 py-1 text-sm font-medium', Math.abs(((value - v + 540) % 360) - 180) < 2 ? 'border-brand bg-brand-soft text-brand-ink' : 'border-slate-200 text-slate-600 hover:bg-slate-50')}>
           {label}
         </button>
       ))}
@@ -234,6 +285,37 @@ function StringBar({ design }) {
   );
 }
 
+/**
+ * Where the ridge of a two-slope roof runs. Sliding it makes one slope wider and the other narrower; the
+ * ridge stays at the same height, so the slopes get a little steeper or gentler to meet it.
+ */
+function RidgePosition({ section }) {
+  const fr = normSection(section).frame;
+  if (!fr || fr.hip) return null;
+  const depth = fr.dMax - fr.dMin;
+  const a = compassLabel(fr.az); // the slope on this side covers `ridge` of the roof's width
+  const b = compassLabel(normalizeAzimuth(fr.az + 180));
+  const move = (ridge) => {
+    const r = Math.min(0.85, Math.max(0.15, ridge));
+    const pitch = Math.min(60, Math.max(1, Math.round((Math.atan(fr.rise / (r * depth)) * 180000) / Math.PI) / 1000));
+    const { sections, set } = useStore.getState();
+    set({ sections: sections.map((sec) => (sec.id === section.id ? { ...sec, ridge: r, pitch } : sec)), layoutKey: '' });
+  };
+  const share = Math.round(fr.ridge * 100);
+  const where = Math.abs(fr.ridge - 0.5) < 0.02 ? 'Centre' : fr.ridge > 0.5 ? `Toward the ${b} edge` : `Toward the ${a} edge`;
+  return (
+    <div>
+      <div className="text-sm font-medium text-slate-700">Where the ridge runs</div>
+      <input aria-label="Ridge position" type="range" min={15} max={85} step={1} value={share} onChange={(e) => move(Number(e.target.value) / 100)} className="mt-2 w-full cursor-pointer accent-brand" />
+      <div className="mt-1 flex items-center justify-between gap-2 text-xs text-slate-500">
+        <span>{b} slope wider</span>
+        <b className="text-slate-800">{where}</b>
+        <span>{a} slope wider</span>
+      </div>
+    </div>
+  );
+}
+
 // The house on the marked outline. `part`: 'main' = the type of house, floors (and the low side of a single slope);
 // 'slope' = the slope slider alone. Changing any of them rebuilds the roof and lays the panels again.
 function RoofShape({ section, part = 'main' }) {
@@ -246,26 +328,30 @@ function RoofShape({ section, part = 'main' }) {
     set({ sections: sections.map((sec) => (sec.id === section.id ? restyleRoof(sec, next, p) : sec)), layoutKey: '' });
   };
   // a single slope can fall towards any side of the house: one choice per compass direction, the longest such wall
+  const flatPoly = useMemo(() => normSection({ ...section, roofType: 'flat' }).poly, [section]);
+  const bearings = useMemo(() => shedLowBearings(flatPoly), [flatPoly]);
   const facings = useMemo(() => {
     const by = {};
-    for (const e of edges(normSection({ ...section, roofType: 'flat' }).poly)) {
+    for (const e of edges(flatPoly)) {
       if (e.length < 1.5) continue;
-      const az = Math.round(normalizeAzimuth((Math.atan2(e.outward.x, e.outward.y) * 180) / Math.PI));
+      const az = edgeOutwardAz(e);
       const label = compassLabel(az);
       if (!by[label] || e.length > by[label].len) by[label] = { az, len: e.length };
     }
     return Object.values(by).map((f) => f.az).sort((a, b) => a - b);
-  }, [section]);
+  }, [flatPoly]);
   const setLowSide = (slopeAz) => {
     const { sections, set } = useStore.getState();
-    set({ sections: sections.map((sec) => (sec.id === section.id ? { ...sec, slopeAz } : sec)), layoutKey: '' });
+    const poly = normSection({ ...section, roofType: 'flat' }).poly;
+    const az = snapSlopeAz(poly, slopeAz);
+    set({ sections: sections.map((sec) => (sec.id === section.id ? { ...sec, slopeAz: az, slopeAzSnap: true } : sec)), layoutKey: '' });
   };
   if (part === 'slope') {
     if (ground || style === 'flat') return null;
     return (
       <label className="block text-sm font-medium text-slate-700">
         Roof slope · <b className="text-slate-900">{pitch}°</b>
-        <input type="range" min={10} max={45} step={1} value={pitch} onChange={(e) => setPitch(Number(e.target.value))} onPointerUp={() => apply(style, pitch)} onKeyUp={() => apply(style, pitch)} className="mt-2 w-full accent-brand" />
+        <input type="range" min={1} max={45} step={1} value={pitch} onChange={(e) => setPitch(Number(e.target.value))} onPointerUp={() => apply(style, pitch)} onKeyUp={() => apply(style, pitch)} className="mt-2 w-full accent-brand" />
         <span className="mt-1 flex justify-between text-xs text-slate-500"><span>Gentle</span><span>Steep</span></span>
       </label>
     );
@@ -319,38 +405,129 @@ function RoofShape({ section, part = 'main' }) {
             : `${style === 'flat' ? 'Roof' : 'Walls up to the roof edge'} at ${section.height.toFixed(1)} m (${Math.round(section.height * 3.28084)} ft)`}
         </p>
       </div>
-      {style === 'shed' && facings.length > 0 && (
-        <div>
-          <div className="mb-2 text-sm font-medium text-slate-700">Which side is the low edge?</div>
-          <Chips value={section.slopeAz ?? -1} options={facings.map((az) => [az, `${compassLabel(az)} side`])} onChange={setLowSide} />
-          <p className="mt-1.5 text-xs text-slate-500">The roof falls towards this wall. On the plan view, the low edge is marked in orange and can be clicked too.</p>
+      {style === 'gable' && <RidgePosition section={section} />}
+      {style === 'shed' && (
+        <div className="space-y-3">
+          {bearings.length > 0 && <ShedFallDirection section={section} bearings={bearings} />}
+          {facings.length > 0 && (
+            <div>
+              <div className="mb-2 text-sm font-medium text-slate-700">Or snap to a wall</div>
+              <Chips value={normSection(section).slopeAz ?? -1} options={facings.map((az) => [az, `${compassLabel(az)} side`])} onChange={setLowSide} />
+              <p className="mt-1.5 text-xs text-slate-500">On the plan view, the low edge is orange; click another edge to set it.</p>
+            </div>
+          )}
         </div>
       )}
     </div>
   );
 }
 
-// things standing on the roof: the user marks each on the plan view
+/** Products added on top of a chosen package: each is priced in the proposal with the package. */
+function ExtraProducts({ items, onChange, catalog }) {
+  const set = (i, patch) => onChange(items.map((x, j) => (j === i ? { ...x, ...patch } : x)));
+  const field = 'mt-1 h-9 w-full rounded-md border border-slate-300 bg-white px-2 text-sm text-slate-900 outline-none focus:border-brand';
+  // the company's catalog products, one list (picking one fills in its name, unit, price, GST and HSN)
+  const options = (catalog?.materialCategories || []).flatMap((cat) => (cat.products || []).map((p) => ({ ...p, catName: cat.name })));
+  // grouped by category, as in the catalog (a category's products sit under its own heading)
+  const groupOptions = Object.entries(options.reduce((g, o) => ((g[o.catName] ||= []).push(o), g), {}));
+  const pick = (i, value) => {
+    if (value === '__custom') return set(i, { productId: '', custom: true });
+    const p = options.find((o) => o.id === value);
+    if (!p) return set(i, { productId: '', custom: false });
+    set(i, {
+      productId: p.id,
+      custom: false,
+      name: p.name || [p.brand, p.model].filter(Boolean).join(' '),
+      detail: p.catName,
+      unit: p.unit || 'Nos',
+      price: Number(p.price) || 0,
+      gstPercent: p.gstPercent != null ? String(p.gstPercent) : '',
+      hsn: p.hsnCode || '',
+    });
+  };
+  return (
+    <div>
+      <div className="mb-2 flex items-center justify-between">
+        <p className="text-[13px] text-slate-500">Anything beyond the package or custom pricing, such as extra panels, cable or accessories.</p>
+        <button type="button" onClick={() => onChange([...items, { name: '', detail: '', qty: 1, unit: 'Nos', price: 0, gstPercent: '', hsn: '' }])} className="ml-3 inline-flex shrink-0 items-center gap-1 rounded-md border border-slate-300 px-2.5 py-1 text-xs font-semibold text-slate-700 hover:bg-slate-50"><Plus className="h-3.5 w-3.5" />Add product</button>
+      </div>
+      {items.length > 0 && (
+        <div className="divide-y divide-slate-200 border-y border-slate-200">
+          {items.map((it, i) => (
+            <div key={i} className="grid grid-cols-[minmax(0,1fr)_64px_72px_88px_72px_32px] items-end gap-2 py-2.5">
+              <label className="text-[11px] text-slate-500">Product
+                <select value={it.custom ? '__custom' : it.productId || ''} onChange={(e) => pick(i, e.target.value)} className={field}>
+                  <option value="">{options.length ? 'Choose a product…' : 'No products in catalog'}</option>
+                  {groupOptions.map(([cat, list]) => (
+                    <optgroup key={cat} label={cat}>
+                      {list.map((o) => (
+                        <option key={o.id} value={o.id}>{`${o.name || [o.brand, o.model].filter(Boolean).join(' ')} — ${Number(o.stock) || 0} ${o.unit || 'Nos'} left`}</option>
+                      ))}
+                    </optgroup>
+                  ))}
+                  <option value="__custom">Other (type a name)</option>
+                </select>
+                {it.custom && <input value={it.name} maxLength={160} placeholder="Product name" onChange={(e) => set(i, { name: e.target.value })} className={`${field} mt-1.5`} />}
+              </label>
+              <label className="text-[11px] text-slate-500">Qty<input type="number" min={0} step="any" value={it.qty} onChange={(e) => set(i, { qty: Number(e.target.value) || 0 })} className={field} /></label>
+              <label className="text-[11px] text-slate-500">Unit<input maxLength={20} value={it.unit} onChange={(e) => set(i, { unit: e.target.value })} className={field} /></label>
+              <label className="text-[11px] text-slate-500">Price<input type="number" min={0} step="any" value={it.price} onChange={(e) => set(i, { price: Number(e.target.value) || 0 })} className={field} /></label>
+              <label className="text-[11px] text-slate-500">GST %<input type="number" min={0} max={100} step="any" value={it.gstPercent} placeholder="Default" onChange={(e) => set(i, { gstPercent: e.target.value })} className={field} /></label>
+              <button type="button" aria-label="Remove product" onClick={() => onChange(items.filter((_, j) => j !== i))} className="grid h-8 w-8 place-items-center rounded-md text-slate-400 hover:bg-red-50 hover:text-red-600"><Trash2 className="h-4 w-4" /></button>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// things standing on the roof: the user draws each outline on the plan, then sets how tall it is
 const ROOF_THINGS = [
-  { key: 'tank', icon: Cylinder, label: 'Water tank', preset: { name: 'Water tank', w: 1.5, d: 1.5, h: 1.8 } },
-  { key: 'stair', icon: DoorOpen, label: 'Staircase room', preset: { name: 'Staircase room', w: 3, d: 3, h: 2.7 } },
-  { key: 'other', icon: Package, label: 'AC / dish / other', preset: { name: 'Other', w: 1, d: 1, h: 1 } },
-  { key: 'tree', icon: TreePine, label: 'Tree near the roof' },
+  { key: 'tank', icon: Cylinder, label: 'Water tank', shape: 'cylinder' },
+  { key: 'stair', icon: DoorOpen, label: 'Staircase room', shape: 'custom' },
+  { key: 'floor', icon: Building2, label: 'Roof on roof', shape: 'custom' },
+  { key: 'lift', icon: Warehouse, label: 'Lift room', shape: 'custom' },
+  { key: 'other', icon: Package, label: 'AC / dish / other', shape: 'custom' },
+  { key: 'tree', icon: TreePine, label: 'Tree near the roof', shape: 'custom' },
 ];
 
-/** Obstacles on or near the roof: pick one, then tap where it is (3D or plan). Panels keep clear. */
-function RoofObstacles() {
+/** How tall an obstacle is, in metres — any value, not a fixed list. */
+function HeightSlider({ value, onChange, max = 20 }) {
+  const h = Math.max(0.2, Number(value) || 0.2);
+  const set = (n) => onChange(Math.max(0.2, Math.min(40, n)));
+  return (
+    <label className="mt-2 block text-xs font-medium text-slate-600" onClick={(e) => e.stopPropagation()}>
+      <span className="flex items-center justify-between gap-2">
+        Height
+        <span className="inline-flex items-center gap-1 font-semibold text-slate-900">
+          <input type="number" min={0.2} max={40} step={0.1} value={Math.round(h * 10) / 10} onChange={(e) => set(Number(e.target.value))} className="h-7 w-16 rounded border border-slate-300 px-1.5 text-right text-sm" />
+          m
+        </span>
+      </span>
+      <input type="range" min={0.2} max={max} step={0.1} value={Math.min(max, h)} onChange={(e) => set(Number(e.target.value))} className="mt-1 w-full accent-brand" />
+    </label>
+  );
+}
+
+/** Obstacles on or near the roof: pick one, draw its outline anywhere, then set the height. */
+function RoofObstacles({ section, onPlan }) {
   const s = useStore();
-  const armed = s.tool === 'mark-area' ? s.pendingKey : null;
+  const armed = (s.tool === 'draw-section' || s.tool === 'mark-area') && ROOF_THINGS.some((it) => it.key === s.pendingKey) ? s.pendingKey : null;
   const things = s.objects.filter((o) => o.type === 'block' || o.type === 'tree');
   const pick = (it) => {
     if (armed === it.key) return s.set({ tool: 'select', pendingKey: null, pendingBlock: null });
-    s.set({ tool: 'mark-area', pendingKey: it.key, pendingBlock: it.preset || null, selectedId: null });
+    onPlan?.();
+    const tool = it.shape === 'cylinder' ? 'mark-area' : 'draw-section';
+    const rise = it.key === 'tree' ? 6 : it.key === 'tank' ? 1.5 : it.key === 'lift' ? 2.5 : it.key === 'floor' ? 2.7 : 2;
+    s.set({ tool, pendingKey: it.key, pendingBlock: { name: it.label, h: rise }, selectedId: null });
   };
-  const heights = (o) => (o.type === 'tree' ? [[4, '13 ft'], [6, '20 ft'], [9, '30 ft'], [12, '40 ft']] : [[1, '3 ft'], [1.8, '6 ft'], [2.7, '9 ft · one floor'], [5.4, '18 ft · two floors']]);
+  const upper = section ? s.sections.filter((sec) => sec.building === section.building && sec.id !== section.id) : [];
+  const aboveRoof = (sec) => Math.max(0.2, sec.height - roofClearance(s.sections, sec.points, sec.id));
+  const deckArmed = armed === 'stair' || armed === 'lift' || armed === 'floor';
   return (
     <div className="space-y-3">
-      <p className="text-sm text-slate-600">{armed ? <b className="text-brand-ink">Now tap the spot on the roof where it is.</b> : 'Anything standing on the roof? Pick it, then tap where it is.'} A standard-size one appears and panels are kept away from it. Wrong size? On the Plan view, drag its corner.</p>
+      <p className="text-sm text-slate-600">{armed === 'tank' ? <b className="text-brand-ink">On the plan, click the centre of the tank, then drag out its width.</b> : deckArmed ? <b className="text-brand-ink">On the plan, click each corner of this flat roof, then press Finish. Panels can sit on it.</b> : armed ? <b className="text-brand-ink">On the plan, click each corner of the outline, then press Finish.</b> : 'A staircase room, lift room and roof on roof are flat roofs you draw, and panels can sit on them. A water tank is a cylinder. Anything else is an obstacle the panels stay clear of.'}</p>
       <div className="grid grid-cols-2 gap-2">
         {ROOF_THINGS.map((it) => (
           <button key={it.key} type="button" onClick={() => pick(it)} className={cx('flex items-center gap-2 rounded-lg border-2 px-3 py-2.5 text-left text-sm font-semibold', armed === it.key ? 'border-brand bg-brand-soft text-brand-ink' : 'border-slate-200 text-slate-700 hover:border-slate-300')}>
@@ -358,20 +535,37 @@ function RoofObstacles() {
           </button>
         ))}
       </div>
-      {things.length > 0 && (
+      {(things.length > 0 || upper.length > 0) && (
         <div className="space-y-2">
+          {upper.map((sec) => (
+            <div key={sec.id} className={cx('flex items-center justify-between gap-2 rounded-lg border-2 p-3', sec.id === s.selectedId ? 'border-brand' : 'border-slate-200')} onClick={() => s.set({ selectedId: sec.id, tool: 'select' })}>
+              <div className="min-w-0 flex-1">
+                <div className="text-sm font-semibold">{sec.name || 'Roof on roof'}</div>
+                {(sec.deck || !sec.roofType || sec.roofType === 'flat') && <div className="text-xs text-slate-500">Flat roof · panels can sit on it</div>}
+                <HeightSlider value={aboveRoof(sec)} max={8} onChange={(h) => s.updateSection(sec.id, { height: roofClearance(s.sections, sec.points, sec.id) + h })} />
+              </div>
+              <button type="button" aria-label="Remove" onClick={(e) => { e.stopPropagation(); s.remove(sec.id); }} className="grid h-8 w-8 shrink-0 place-items-center rounded-full text-red-500 hover:bg-red-50"><Trash2 className="h-4 w-4" /></button>
+            </div>
+          ))}
           {things.map((o) => (
             <div key={o.id} className={cx('rounded-lg border-2 p-3', o.id === s.selectedId ? 'border-brand' : 'border-slate-200')} onClick={() => s.set({ selectedId: o.id, tool: 'select' })}>
               <div className="flex items-center justify-between gap-2">
                 <div className="text-sm font-semibold">{o.type === 'tree' ? 'Tree' : o.name}</div>
-                <span className="ml-auto text-xs text-slate-500">{o.type === 'tree' ? `${(o.r * 2 * FT).toFixed(0)} ft wide` : `${(o.w * FT).toFixed(0)} × ${(o.d * FT).toFixed(0)} ft`}</span>
+                <span className="ml-auto text-xs text-slate-500">{o.type === 'tree' ? `${(o.r * 2).toFixed(1)} m across` : /tank/i.test(o.name || '') || o.shape === 'cylinder' ? `${(o.w || 0).toFixed(1)} m across` : o.points?.length >= 3 ? `${polygonArea(o.points).toFixed(1)} m²` : `${o.w?.toFixed(1) || '–'} × ${o.d?.toFixed(1) || '–'} m`}</span>
                 <button type="button" aria-label="Remove" onClick={(e) => { e.stopPropagation(); s.remove(o.id); }} className="grid h-8 w-8 place-items-center rounded-full text-red-500 hover:bg-red-50"><Trash2 className="h-4 w-4" /></button>
               </div>
-              <div className="mt-2 flex flex-wrap gap-1.5">
-                {heights(o).map(([v, l]) => (
-                  <button key={l} type="button" onClick={(e) => { e.stopPropagation(); s.updateObject(o.id, { h: v }); }} className={cx('rounded-full border px-2.5 py-1 text-xs font-medium', Math.abs((o.h || 0) - v) < 0.01 ? 'border-brand bg-brand-soft text-brand-ink' : 'border-slate-200 text-slate-600 hover:bg-slate-50')}>{l}</button>
-                ))}
-              </div>
+              {(/tank/i.test(o.name || '') || o.shape === 'cylinder') && (
+                <label className="mt-2 block text-xs font-medium text-slate-600" onClick={(e) => e.stopPropagation()}>
+                  <span className="flex items-center justify-between gap-2">Width
+                    <span className="inline-flex items-center gap-1 font-semibold text-slate-900">
+                      <input type="number" min={0.4} max={20} step={0.1} value={Math.round((o.w || 1.5) * 10) / 10} onChange={(e) => { const w = Math.max(0.4, Number(e.target.value) || 0.4); s.updateObject(o.id, { w, d: w }); }} className="h-7 w-16 rounded border border-slate-300 px-1.5 text-right text-sm" />
+                      m
+                    </span>
+                  </span>
+                  <input type="range" min={0.4} max={8} step={0.1} value={Math.min(8, o.w || 1.5)} onChange={(e) => { const w = Number(e.target.value); s.updateObject(o.id, { w, d: w }); }} className="mt-1 w-full accent-brand" />
+                </label>
+              )}
+              <HeightSlider value={o.h} max={o.type === 'tree' ? 20 : 12} onChange={(h) => s.updateObject(o.id, { h })} />
             </div>
           ))}
         </div>
@@ -428,6 +622,8 @@ export default function StepSimpleDesign({ design, stage = 'panels', actions = [
     };
   }, [wantShadow]);
   const { totals, structure, spec, fin } = design;
+  // panels appear from the Panels step on: the Building and Package steps show the roof only
+  const panelsShown = !['building', 'system'].includes(stage);
   const main = sections[0];
 
   const catalogReady = Boolean(s.catalog);
@@ -799,17 +995,17 @@ export default function StepSimpleDesign({ design, stage = 'panels', actions = [
   // one colour per block of the pricing form: a tinted header band with an icon chip
   const band = (tone, Icon, title, hint) => {
     const t = {
-      violet: ['bg-violet-50 border-violet-100', 'bg-violet-600', 'text-violet-950'],
-      brand: ['bg-brand-soft border-brand/15', 'bg-brand', 'text-brand-ink'],
-      sky: ['bg-sky-50 border-sky-100', 'bg-sky-600', 'text-sky-950'],
-      amber: ['bg-amber-50 border-amber-100', 'bg-amber-500', 'text-amber-950'],
-      emerald: ['bg-emerald-50 border-emerald-100', 'bg-emerald-600', 'text-emerald-950'],
+      violet: ['text-violet-700', 'text-violet-700'],
+      brand: ['text-brand', 'text-slate-900'],
+      sky: ['text-sky-700', 'text-slate-900'],
+      amber: ['text-amber-700', 'text-slate-900'],
+      emerald: ['text-emerald-700', 'text-slate-900'],
     }[tone];
     return (
-      <div className={cx('-mx-5 -mt-5 mb-4 flex items-center justify-between gap-3 rounded-t-xl border-b px-5 py-3', t[0])}>
-        <div className="flex items-center gap-2.5">
-          <span className={cx('grid h-8 w-8 place-items-center rounded-lg text-white shadow-sm', t[1])}><Icon className="h-4 w-4" /></span>
-          <h3 className={cx('text-base font-semibold', t[2])}>{title}</h3>
+      <div className="mb-4 flex items-center justify-between gap-3 border-b border-slate-200 pb-2.5">
+        <div className="flex items-center gap-2">
+          <Icon className={cx('h-4 w-4', t[0])} aria-hidden />
+          <h3 className={cx('text-[15px] font-semibold', t[1])}>{title}</h3>
         </div>
         {hint && <span className="text-xs text-slate-500">{hint}</span>}
       </div>
@@ -824,7 +1020,7 @@ export default function StepSimpleDesign({ design, stage = 'panels', actions = [
   // the pricing form, in pieces: the Products step shows the main ones and folds the rest under
   // "More options"; "Edit proposal" shows them all
   const subsidyCard = s.designId ? (
-          <div className="rounded-xl border border-slate-200 bg-white p-5 text-sm shadow-sm">
+          <div className="pt-1 text-sm">
             {band('violet', Landmark, 'Subsidy', 'Optional')}
             <SubsidyField design={{ id: s.designId, subsidy: s.subsidy }} money={money} onChange={(subsidy) => s.set({ subsidy })} />
           </div>
@@ -997,6 +1193,8 @@ export default function StepSimpleDesign({ design, stage = 'panels', actions = [
     <>
           {subhead('text-amber-700', Wrench, 'Installation charges')}
           <ChargePicker value={config.installationCharges} onChange={(installationCharges) => s.patch('config', { installationCharges })} currency={finance.currency} />
+          {subhead('text-emerald-700', Package, 'Additional products')}
+          <ExtraProducts items={config.extraItems || []} onChange={(extraItems) => s.patch('config', { extraItems })} catalog={design.catalog} />
     </>
   );
   const bosBlock = (
@@ -1117,6 +1315,9 @@ export default function StepSimpleDesign({ design, stage = 'panels', actions = [
                 <div className="text-[13px] text-slate-600 pb-1 border-b border-slate-100">
                   Bundled: {count} modules, structure, BOS & installation
                 </div>
+                {(design.cost.extraItems || []).map((x, i) => (
+                  <div key={`x${i}`} className="flex justify-between py-0.5 text-sm text-slate-600"><span>+ {x.name} ({x.qty} {x.unit || 'Nos'})</span><b>{money((Number(x.qty) || 1) * (Number(x.price) || 0))}</b></div>
+                ))}
                 {Number(design.cost.floorCost) > 0 && (
                   <div className="flex justify-between py-1 text-sm text-slate-600">
                     <span>Floor placement (Floor {config.floorPlacement})</span>
@@ -1178,11 +1379,11 @@ export default function StepSimpleDesign({ design, stage = 'panels', actions = [
           </div>
   );
   const detailsBody = (
-    <div className="space-y-5 text-[15px] text-slate-700">
+    <div className="space-y-8 text-[15px] text-slate-700">
       {subsidyCard}
-      <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
+      <div>
         {band('brand', Boxes, 'Materials & terms', config.pricingMode === 'package' ? 'Package pricing' : 'Custom pricing')}
-        <div className="space-y-4">
+        <div className="space-y-5">
           {pricingBlock}
           {floorBlock}
           {termsBlock}
@@ -1190,7 +1391,7 @@ export default function StepSimpleDesign({ design, stage = 'panels', actions = [
           {bosBlock}
         </div>
       </div>
-      <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
+      <div>
         {band('emerald', ReceiptText, 'Cost breakdown', 'Updates as you edit')}
         {costBody}
       </div>
@@ -1240,7 +1441,7 @@ export default function StepSimpleDesign({ design, stage = 'panels', actions = [
   return (
     <>
       <div className="absolute inset-y-0 left-0 overflow-hidden" style={{ right: sideW, transition: `right ${glide}` }}>
-        {view === '3d' ? <Scene3D design={design} /> : <Editor2D design={design} slopeEdit={stage === 'building'} stringColors={s.tool === 'string' ? allStringColors(design.electrical) : null} stringPath={activeStringPath(design, s.activeStringId, s.tool)} />}
+        {view === '3d' ? <Scene3D design={design} showPanels={panelsShown} /> : <Editor2D design={design} showPanels={panelsShown} slopeEdit={stage === 'building'} editRaised={stage === 'building'} stringColors={s.tool === 'string' ? allStringColors(design.electrical) : null} stringPath={activeStringPath(design, s.activeStringId, s.tool)} />}
         <div className="absolute left-4 top-4 flex items-center gap-2" onPointerDown={(e) => e.stopPropagation()}>
           <div className="flex rounded-full bg-white p-1 shadow-lg">
             {[['3d', Box, '3D'], ['2d', Move, 'Plan view']].map(([k, Icon, label]) => (
@@ -1269,7 +1470,13 @@ export default function StepSimpleDesign({ design, stage = 'panels', actions = [
         {view === '2d' && (
           <div className="pointer-events-none absolute left-1/2 top-5 -translate-x-1/2 rounded-full bg-slate-900/85 px-5 py-2 text-base text-white shadow-lg">
             {s.tool === 'draw-section'
-              ? 'Click each corner of the new building’s roof on the picture, then press Finish'
+              ? s.pendingKey === 'building'
+                ? 'Click each corner of the new building’s roof on the picture, then press Finish'
+                : s.pendingKey === 'stair' || s.pendingKey === 'lift' || s.pendingKey === 'floor'
+                ? 'Click each corner of this flat roof, then press Finish. Panels can sit on it'
+                : `Click each corner of the ${(s.pendingBlock?.name || 'outline').toLowerCase()}, then press Finish`
+              : s.tool === 'mark-area' && s.pendingKey === 'tank'
+              ? 'Click the centre of the water tank, then drag out its width'
               : s.tool === 'mark-area'
               ? `Tap where the ${s.pendingKey === 'tree' ? 'tree' : (s.pendingBlock?.name || 'object').toLowerCase()} is, or press and drag across it`
               : s.tool === 'string' ? ((s.electrical.strings || []).length ? 'Tap panels in wiring order, or press and drag across them · drag on empty roof to move the plan' : 'The colours show which panels are wired together')
@@ -1344,7 +1551,7 @@ export default function StepSimpleDesign({ design, stage = 'panels', actions = [
                   {roofSec && roofStyleOf(roofSec) !== 'flat' && <RoofShape key={`slope:${roofSec.id}:${roofSec.pitch}:${roofSec.height}`} section={roofSec} part="slope" />}
                   <div>
                     <div className="mb-2 text-base font-semibold text-slate-900">Things on the roof</div>
-                    <RoofObstacles />
+                    <RoofObstacles section={roofSec} onPlan={() => setView('2d')} />
                   </div>
                   {building && buildingsHere.length <= 1 && !s.readOnly && (
                     <div>
@@ -1642,7 +1849,22 @@ export default function StepSimpleDesign({ design, stage = 'panels', actions = [
                 </div>
               )}
 
-              {/* the answer: what the client pays */}
+              <Fold title={`Discount, ${taxName()} & price breakdown`} open>
+                <div className="text-[15px] text-slate-700">{costBody}</div>
+              </Fold>
+              <Fold title="More options" hint="Floor cost, installation charges, subsidy, proposal terms" open={Number(config.floorCost) > 0 || (config.installationCharges || []).length > 0}>
+                <div className="space-y-8 text-[15px] text-slate-700">
+                  <div className="space-y-5">
+                    {band('amber', Wrench, 'Services')}
+                    {floorBlock}
+                    {chargesBlock}
+                  </div>
+                  {subsidyCard}
+                  <div className="space-y-5">{termsBlock}</div>
+                </div>
+              </Fold>
+
+              {/* the answer: what the client pays, at the very bottom */}
               <div className="rounded-2xl bg-slate-900 px-5 py-5 text-white">
                 <div className="text-sm font-semibold text-slate-300">Total price{design.cost.withGst !== false && design.cost.gstAmount > 0 ? ` (incl. ${taxName()})` : ''}</div>
                 <div className="text-4xl font-extrabold">{money(design.cost.total)}</div>
@@ -1652,21 +1874,6 @@ export default function StepSimpleDesign({ design, stage = 'panels', actions = [
                   <div><div className="text-slate-400">Payback</div><div className="font-semibold">{fin.payback ? `${fin.payback.toFixed(1)} years` : `${fin.rows.length}+ years`}</div></div>
                 </div>
               </div>
-
-              <Fold title={`Discount, ${taxName()} & price breakdown`} open>
-                <div className="text-[15px] text-slate-700">{costBody}</div>
-              </Fold>
-              <Fold title="More options" hint="Floor cost, installation charges, subsidy, proposal terms" open={Number(config.floorCost) > 0 || (config.installationCharges || []).length > 0}>
-                <div className="space-y-5">
-                            <div className="space-y-4 rounded-xl border border-slate-200 bg-white p-5 text-[15px] text-slate-700">
-                <div className="text-base font-semibold text-slate-900">Services</div>
-                {floorBlock}
-                {chargesBlock}
-              </div>
-              {subsidyCard}
-                  <div className="space-y-4 rounded-xl border border-slate-200 bg-white p-5 text-[15px] text-slate-700">{termsBlock}</div>
-                </div>
-              </Fold>
             </div>
           )}
           {stage === 'proposal' && (

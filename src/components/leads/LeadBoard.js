@@ -224,7 +224,7 @@ export default function LeadBoard() {
       {state.truncated && <Alert tone="warn" className="mb-4">The board shows the newest 400 leads from each source. Use the filters to narrow it down.</Alert>}
 
       {state.loading ? <LoadingBlock /> : (
-        <KanbanBoard type="lead" onMove={onMove} className="h-[calc(100vh-17rem)] min-h-[24rem]">
+        <KanbanBoard type="lead" onMove={onMove} className="h-[calc(100vh-12rem)] min-h-[32rem]">
           {state.columns.map((column) => (
             <KanbanColumn
               key={column.id}

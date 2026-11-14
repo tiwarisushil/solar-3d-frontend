@@ -6,9 +6,11 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import { useEffect, useMemo, useState } from 'react';
 import { api, assetUrl } from '@/lib/api';
 import { useSession } from '@/lib/session';
-import { useResource } from '@/lib/useResource';
+import { useResource, usePaginatedResource } from '@/lib/useResource';
 import { adminCompanyCreateSchema, adminCompanyUpdateSchema, newPassword, useValidation } from '@/lib/validation';
-import { Alert, Badge, Button, Card, ConfirmDialog, EmptyState, FormField, FormModal, Input, NameInput, PhoneInput, LoadingBlock, LogoChip, PageHeader, PasswordInput, RowMenu, Select, Table, Tabs, Td, Textarea, Th, Toggle, Tr, formatDate, timeAgo, toast } from '../kit';
+import { Alert, Badge, Button, Card, ConfirmDialog, EmptyState, FormField, FormModal, Input, NameInput, PhoneInput, LoadingBlock, LogoChip, PageHeader, PasswordInput, RowMenu, Select, Table, TablePagination, Tabs, Td, Textarea, Th, Toggle, Tr, formatDate, timeAgo, toast } from '../kit';
+
+const PAGE_SIZE = 10;
 import { PlanBadge, StatusBadge } from './shared';
 
 const BLANK = { hasBranches: false, branchName: '', branchOwnerName: '', branchOwnerEmail: '', branchOwnerPassword: '', name: '', contactName: '', loginEmail: '', password: '', phone: '', address: '', website: '', taxId: '', pan: '', planId: '', status: 'active', notes: '', limits: { maxConcurrentLogins: 2, maxBranches: 3, maxClients: 100, maxDesigns: 100 }, features: { pdfBranding: true, excelImport: true } };
@@ -394,9 +396,19 @@ export default function AdminCompanies() {
   const router = useRouter();
   const params = useSearchParams();
   const impersonate = useSession((s) => s.impersonate);
-  const { data, setData, loading, error } = useResource('/api/admin/companies');
   const [query, setQuery] = useState('');
+  const [debouncedQuery, setDebouncedQuery] = useState('');
   const [status, setStatus] = useState('all');
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedQuery(query.trim()), 300);
+    return () => clearTimeout(t);
+  }, [query]);
+  // search and status are applied by the server, one page at a time
+  const listPath = useMemo(() => {
+    const qs = new URLSearchParams({ ...(debouncedQuery && { q: debouncedQuery }), ...(status !== 'all' && { status }) }).toString();
+    return `/api/admin/companies${qs ? `?${qs}` : ''}`;
+  }, [debouncedQuery, status]);
+  const { items: data, setItems: setData, loading, error, total, page, setPage, totalPages } = usePaginatedResource(listPath, { limit: PAGE_SIZE });
   const [modal, setModal] = useState(null); // {type, company}
   const [created, setCreated] = useState(null);
   const [busy, setBusy] = useState(false);
@@ -410,25 +422,8 @@ export default function AdminCompanies() {
     }
   }, [params, router]);
 
-  const searched = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    return (data || []).filter((c) => {
-      if (!q) return true;
-      const hay = `${c.name} ${c.loginEmail} ${c.phone || ''} ${c.organizationName || ''} ${c.adminEmail || ''}`.toLowerCase();
-      return hay.includes(q);
-    });
-  }, [data, query]);
-
-  const rows = useMemo(() => {
-    let list = groupAdminCompanyRows(searched);
-    if (status !== 'all') {
-      list = list.filter((row) => {
-        if (row.type === 'single') return row.company.status === status;
-        return row.branches.some((b) => b.status === status);
-      });
-    }
-    return list;
-  }, [searched, status]);
+  // the current page of companies, grouped by organization (branches of one organization sit together)
+  const rows = useMemo(() => groupAdminCompanyRows(data || []), [data]);
 
   const close = () => { setModal(null); setModalError(''); };
   const upsert = (c) => setData((list) => (list.some((x) => x.id === c.id) ? list.map((x) => (x.id === c.id ? c : x)) : [c, ...list]));
@@ -489,8 +484,8 @@ export default function AdminCompanies() {
           <Select aria-label="Filter by status" value={status} onValue={setStatus} className="w-40"><option value="all">All statuses</option><option value="active">Active</option><option value="suspended">Suspended</option></Select>
         </div>
         {loading ? <LoadingBlock /> : !rows.length ? (
-          <EmptyState icon={Building2} title={data?.length ? 'No companies match' : 'No companies yet'} description={data?.length ? 'Try a different search or filter.' : 'Add a company to give it a workspace and sign-in.'}>
-            {!data?.length && <Button variant="primary" icon={Plus} onClick={() => setModal({ type: 'form' })}>Add company</Button>}
+          <EmptyState icon={Building2} title={total ? 'No companies match' : 'No companies yet'} description={total ? 'Try a different search or filter.' : 'Add a company to give it a workspace and sign-in.'}>
+            {!total && <Button variant="primary" icon={Plus} onClick={() => setModal({ type: 'form' })}>Add company</Button>}
           </EmptyState>
         ) : (
           <Table>
@@ -522,6 +517,7 @@ export default function AdminCompanies() {
             </tbody>
           </Table>
         )}
+        <TablePagination page={page} totalPages={totalPages} total={total} pageSize={PAGE_SIZE} onPageChange={setPage} className="border-t border-slate-100" />
       </Card>
 
       {modal?.type === 'form' && (

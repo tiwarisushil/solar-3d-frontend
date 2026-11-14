@@ -7,11 +7,11 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import * as THREE from 'three';
 import { formatMoney, formatNumber } from '@/lib/energy';
 import { compassLabel, toLatLng } from '@/lib/geo';
-import { offsetPolygon, rectPoly, signedArea } from '@/lib/geometry';
+import { offsetPolygon, polygonCentroid, signedArea } from '@/lib/geometry';
 import { hipParts, hipPlaneZ, hipZ } from '@/lib/hipRoof';
 import { addBase, togglePanelAt, withinPackage } from '@/lib/autofill';
 import { activeStringPath, allStringColors, stringPaint, stringStroke } from '@/lib/strings';
-import { newId, magnetize, PANEL_GAP, PANEL_THICKNESS, PATH_COLORS, pathCount, pathOn, resizeBase, ridgeHeight, roofHeightAt, roofPlanes, roofZ, slotAt, slotStart } from '@/lib/model';
+import { blockOutline, isCylinder, newId, magnetize, PANEL_GAP, PANEL_THICKNESS, PATH_COLORS, pathCount, pathOn, resizeBase, ridgeHeight, roofHeightAt, roofPlanes, roofZ, slotAt, slotStart } from '@/lib/model';
 import { dayFor, fmtDay, fmtHour, fmtHour24, SEASON_DAYS } from '@/lib/seasons';
 import { PANEL_MESH_TAG, SUN_LIGHT_NAME } from '@/lib/shadowReport/sceneAdapter';
 import { staticMapSize, staticMapUrl, zoomForSpan } from '@/lib/staticMap';
@@ -53,6 +53,21 @@ function ringGeo(outer, inner, height, base) {
 // `at` is where the satellite picture is centred, in the design's metres ({x, y}); the map's own centre by default
 const HERE = { x: 0, y: 0 };
 
+/** Roof triangles should face up in Three (y-up); flips clockwise ears in plan. */
+function pushRoofTri(pos, uv, poly, tri, section, lift, mapSize, at) {
+  let [i0, i1, i2] = tri;
+  const p0 = poly[i0];
+  const p1 = poly[i1];
+  const p2 = poly[i2];
+  const cross = (p1.x - p0.x) * (p2.y - p0.y) - (p1.y - p0.y) * (p2.x - p0.x);
+  if (cross < 0) [i1, i2] = [i2, i1];
+  for (const i of [i0, i1, i2]) {
+    const p = poly[i];
+    pos.push(p.x, roofZ(section, p.x, p.y) + lift, -p.y);
+    uv.push((p.x - at.x) / mapSize + 0.5, (p.y - at.y) / mapSize + 0.5);
+  }
+}
+
 function topGeo(poly, y, mapSize, at = HERE) {
   const g = new THREE.ShapeGeometry(new THREE.Shape(poly.map((p) => new THREE.Vector2(p.x, p.y))));
   const pos = g.attributes.position;
@@ -64,11 +79,56 @@ function topGeo(poly, y, mapSize, at = HERE) {
   return g;
 }
 
+function buffGeo(positions, uv) {
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  if (uv) g.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+  g.computeVertexNormals();
+  return g;
+}
+
+/**
+ * Single-slope roof: one triangulated plane plus rake walls (high wall and sides), classified by
+ * position along the fall line — not compass bearing alone.
+ */
+function shedRoofGeo(section, mapSize, at = HERE) {
+  const top = [];
+  const topUv = [];
+  const walls = [];
+  const wallUv = [];
+  const lift = 0.02;
+  const h = section.frame.wallBase;
+  const poly = section.poly;
+  const contour = poly.map((p) => new THREE.Vector2(p.x, p.y));
+  for (const tri of THREE.ShapeUtils.triangulateShape(contour, [])) pushRoofTri(top, topUv, poly, tri, section, lift, mapSize, at);
+  for (let i = 0; i < poly.length; i++) {
+    const a = poly[i];
+    const b = poly[(i + 1) % poly.length];
+    const za = roofZ(section, a.x, a.y);
+    const zb = roofZ(section, b.x, b.y);
+    // the eave wall is already the top of the box; every other edge is closed up to the roof
+    if (za - h < 0.03 && zb - h < 0.03) continue;
+    const len = Math.hypot(b.x - a.x, b.y - a.y) || 1;
+    const push = (x, y, z, u, v) => {
+      walls.push(x, z, -y);
+      wallUv.push(u, v);
+    };
+    push(a.x, a.y, h, 0, 0);
+    push(b.x, b.y, h, len, 0);
+    push(b.x, b.y, zb, len, zb - h);
+    push(a.x, a.y, h, 0, 0);
+    push(b.x, b.y, zb, len, zb - h);
+    push(a.x, a.y, za, 0, za - h);
+  }
+  return { top: buffGeo(top, topUv), walls: walls.length ? buffGeo(walls, wallUv) : null, shed: true };
+}
+
 /**
  * Pitched roof: each slope is triangulated in plan and lifted onto the roof surface, and the walls
- * are closed up to it (the triangular gable ends, the tall side of a single slope).
+ * are closed up to it (the triangular gable ends, the tall side of a two-slope roof).
  */
 function slopedRoofGeo(section, mapSize, at = HERE) {
+  if (section.roofType === 'shed') return shedRoofGeo(section, mapSize, at);
   const top = [];
   const topUv = [];
   const walls = [];
@@ -77,32 +137,19 @@ function slopedRoofGeo(section, mapSize, at = HERE) {
   const onRidge = (p) => section.roofType === 'gable' && Math.abs(p.x * fr.f.x + p.y * fr.f.y - fr.dMid) < 1e-6;
   for (const { poly } of roofPlanes(section)) {
     const contour = poly.map((p) => new THREE.Vector2(p.x, p.y));
-    for (const tri of THREE.ShapeUtils.triangulateShape(contour, [])) {
-      for (const i of tri) {
-        const p = poly[i];
-        top.push(p.x, roofZ(section, p.x, p.y) + lift, -p.y);
-        topUv.push((p.x - at.x) / mapSize + 0.5, (p.y - at.y) / mapSize + 0.5);
-      }
-    }
+    for (const tri of THREE.ShapeUtils.triangulateShape(contour, [])) pushRoofTri(top, topUv, poly, tri, section, lift, mapSize, at);
     for (let i = 0; i < poly.length; i++) {
       const a = poly[i];
       const b = poly[(i + 1) % poly.length];
       if (onRidge(a) && onRidge(b)) continue; // the ridge is inside the building, not a wall
       const za = roofZ(section, a.x, a.y);
       const zb = roofZ(section, b.x, b.y);
-      const h = fr.wallBase; // the box below reaches the lower roof edge; this closes the rest
-      if (za - h < 1e-4 && zb - h < 1e-4) continue; // nothing above the wall here
-      walls.push(a.x, h, -a.y, b.x, h, -b.y, b.x, zb, -b.y, a.x, h, -a.y, b.x, zb, -b.y, a.x, za, -a.y);
+      const base = fr.wallBase;
+      if (za - base < 1e-4 && zb - base < 1e-4) continue;
+      walls.push(a.x, base, -a.y, b.x, base, -b.y, b.x, zb, -b.y, a.x, base, -a.y, b.x, zb, -b.y, a.x, za, -a.y);
     }
   }
-  const make = (positions, uv) => {
-    const g = new THREE.BufferGeometry();
-    g.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
-    if (uv) g.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
-    g.computeVertexNormals();
-    return g;
-  };
-  return { top: make(top, topUv), walls: walls.length ? make(walls) : null };
+  return { top: buffGeo(top, topUv), walls: walls.length ? buffGeo(walls) : null, shed: false };
 }
 
 /* ───────────── hip / Kerala roofs ───────────── */
@@ -429,7 +476,7 @@ function Building({ section, tex, mapSize, at = HERE }) {
     if (section.frame) {
       const roof = slopedRoofGeo(section, mapSize, at);
       const body = ringGeo(section.poly, null, wallH, 0);
-      return { body, top: roof.top, gables: roof.walls, parapet: null, sloped: true, plinth, edges: new THREE.EdgesGeometry(body, 30) };
+      return { body, top: roof.top, gables: roof.walls, parapet: null, sloped: true, shed: roof.shed, plinth, edges: new THREE.EdgesGeometry(body, 30) };
     }
     const body = ringGeo(section.poly, null, section.height, 0);
     const hasParapet = section.parapetH > 0.05 && inner.length >= 3;
@@ -453,7 +500,7 @@ function Building({ section, tex, mapSize, at = HERE }) {
         <meshStandardMaterial color={WALL} map={wallMap} roughness={0.92} />
       </mesh>
       {/* a ground-mounted system: the marked land, no walls to put windows in */}
-      {!section.ground && <Windows poly={section.poly} wallH={section.frame ? section.frame.wallBase : section.height} />}
+      {!section.ground && !section.deck && <Windows poly={section.poly} wallH={section.frame ? section.frame.wallBase : section.height} />}
       <lineSegments geometry={geos.edges}>
         <lineBasicMaterial color={EDGE} transparent opacity={0.55} />
       </lineSegments>
@@ -465,11 +512,11 @@ function Building({ section, tex, mapSize, at = HERE }) {
       {geos.hip && <HipRoof section={section} />}
       {geos.top && <mesh geometry={geos.top} receiveShadow castShadow={Boolean(geos.sloped)}>
         {/* a pitched roof is seen from both sides near the eaves; without imagery it gets a tile colour */}
-        <meshStandardMaterial key={tex ? 'sat' : 'plain'} map={tex} color={tex ? '#ffffff' : geos.sloped ? '#a1604a' : '#cfcbc2'} roughness={1} side={geos.sloped ? THREE.DoubleSide : THREE.FrontSide} />
+        <meshStandardMaterial key={geos.shed ? 'shed' : tex ? 'sat' : 'plain'} map={geos.shed ? null : tex} color={geos.shed ? '#c4785a' : tex ? '#ffffff' : geos.sloped ? '#a1604a' : '#cfcbc2'} roughness={1} side={geos.sloped ? THREE.DoubleSide : THREE.FrontSide} />
       </mesh>}
       {geos.gables && (
         <mesh geometry={geos.gables} castShadow receiveShadow>
-          <meshStandardMaterial color={WALL} roughness={0.92} side={THREE.DoubleSide} />
+          <meshStandardMaterial color={WALL} map={wallMap} roughness={0.92} side={THREE.DoubleSide} />
         </mesh>
       )}
       {geos.parapet && (
@@ -1364,7 +1411,7 @@ function Bridge({ span, height, center }) {
   return null;
 }
 
-export default function Scene3D({ design }) {
+export default function Scene3D({ design, showPanels = true }) {
   const origin = useStore((s) => s.origin);
   const sun = useStore((s) => s.sun);
   const sunOverride = useStore((s) => s.sunOverride);
@@ -1437,7 +1484,7 @@ export default function Scene3D({ design }) {
         <color attach="background" args={['#05070d']} />
         {/* double-click anything — a roof, a panel, the ground — to turn the camera around that spot */}
         <group onDoubleClick={(e) => { e.stopPropagation(); focusApi.go?.(e.point); }}>
-          <SceneContent design={design} origin={origin} day={day} hour={hour} span={span} maxH={maxH} />
+          <SceneContent design={design} origin={origin} day={day} hour={hour} span={span} maxH={maxH} showPanels={showPanels} />
         </group>
         <OrbitControls makeDefault enableDamping target={center} maxPolarAngle={Math.PI / 2 - 0.03} minDistance={3} maxDistance={span * 8} />
         <CameraFocus />
@@ -1484,7 +1531,40 @@ function FarBuilding({ group }) {
   );
 }
 
-function SceneContent({ design, origin, day, hour, span, maxH }) {
+function Obstacle({ b, sections }) {
+  const cylinder = isCylinder(b);
+  const outline = blockOutline(b);
+  const drawn = !cylinder && b.points?.length >= 3;
+  const c = cylinder ? b : polygonCentroid(outline);
+  const base = roofHeightAt(sections, c.x, c.y);
+  const geo = useMemo(() => (drawn ? ringGeo(b.points, null, Math.max(0.2, b.h), base) : null), [drawn, b.points, b.h, base]);
+  useEffect(() => () => geo?.dispose(), [geo]);
+  if (cylinder) {
+    const d = Math.max(0.4, b.w || b.d || 1.5);
+    return (
+      <mesh position={[b.x, base + b.h / 2, -b.y]} castShadow receiveShadow>
+        <cylinderGeometry args={[d / 2, d / 2, b.h, 28]} />
+        <meshStandardMaterial color="#1f2937" roughness={0.75} metalness={0.15} />
+      </mesh>
+    );
+  }
+  if (drawn && geo) {
+    return (
+      <mesh geometry={geo} castShadow receiveShadow>
+        <meshStandardMaterial color="#8b9099" roughness={0.9} />
+      </mesh>
+    );
+  }
+  const ang = Math.atan2(outline[1].y - outline[0].y, outline[1].x - outline[0].x);
+  return (
+    <mesh position={[b.x, base + b.h / 2, -b.y]} rotation-y={ang} castShadow receiveShadow>
+      <boxGeometry args={[b.w, b.h, b.d]} />
+      <meshStandardMaterial color="#8b9099" roughness={0.9} />
+    </mesh>
+  );
+}
+
+function SceneContent({ design, origin, day, hour, span, maxH, showPanels = true }) {
   const texNear = useSatellite(origin, 20);
   const texFar = useSatellite(origin, 18);
   const nearSize = staticMapSize(origin.lat, 20);
@@ -1557,21 +1637,11 @@ function SceneContent({ design, origin, day, hour, span, maxH }) {
         ))}
         {groups.far.map((g) => <FarBuilding key={g.id} group={g} />)}
       </group>
-      {design.blocks.map((b) => {
-        const base = roofHeightAt(design.sections, b.x, b.y);
-        const c = rectPoly(b.x, b.y, b.w, b.d, b.rot || 0);
-        const ang = Math.atan2(c[1].y - c[0].y, c[1].x - c[0].x);
-        return (
-          <mesh key={b.id} position={[b.x, base + b.h / 2, -b.y]} rotation-y={ang} castShadow receiveShadow>
-            {/tank/i.test(b.name || '') ? <cylinderGeometry args={[b.w / 2, b.w / 2, b.h, 24]} /> : <boxGeometry args={[b.w, b.h, b.d]} />}
-            <meshStandardMaterial color={/tank/i.test(b.name || '') ? '#1f2937' : '#8b9099'} roughness={0.9} />
-          </mesh>
-        );
-      })}
+      {design.blocks.map((b) => <Obstacle key={b.id} b={b} sections={design.sections} />)}
       {design.trees.map((t) => (
         <Tree key={t.id} t={t} base={roofHeightAt(design.sections, t.x, t.y)} />
       ))}
-      <PanelTables design={design} />
+      {showPanels && <PanelTables design={design} />}
       <StringPath design={design} />
     </>
   );

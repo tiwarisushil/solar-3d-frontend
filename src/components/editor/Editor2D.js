@@ -4,11 +4,11 @@
 
 import { buildingIdOf, buildingList, isMainSection, mainSection, sectionsOf } from '@/lib/buildings';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { DEG } from '@/lib/geo';
+import { azimuthsMatch, DEG, edgeOutwardAz } from '@/lib/geo';
 import { dist, edges, pointInPolygon, polygonArea, polygonCentroid, rectPoly } from '@/lib/geometry';
 import { addBase, togglePanelAt, withinPackage } from '@/lib/autofill';
 import { stringPaint, stringStroke } from '@/lib/strings';
-import { magnetize, newId, normSection, planeAt, resizeBase, ridgeSegment, roofPlanes, slotAt, slotsBetween, topSection, PATH_COLORS } from '@/lib/model';
+import { blockOutline, isCylinder, magnetize, newId, normSection, planeAt, resizeBase, ridgeSegment, roofClearance, roofPlanes, shedEdgeKind, snapSlopeAz, slotAt, slotsBetween, topSection, PATH_COLORS } from '@/lib/model';
 import { staticMapSize, staticMapUrl } from '@/lib/staticMap';
 import { useStore } from '@/lib/store';
 
@@ -21,6 +21,29 @@ function roofUnder(state, point) {
   const active = buildingList(state.buildings).find((b) => b.id === state.buildingId) || buildingList(state.buildings)[0];
   const building = hit ? buildingIdOf(hit, state.buildings) : active.id;
   return { building, main: mainSection(state.sections, state.buildings, building) };
+}
+
+const DECK_RISE = { stair: 2, lift: 2.5, floor: 2.7 };
+const DECK_NAME = { stair: 'Staircase room', lift: 'Lift room' };
+
+/** A staircase room, lift room or roof on roof: a flat slab above whatever roof it stands on. */
+function addFlatDeck(s, key, points) {
+  const kind = key === 'stair' || key === 'lift' ? key : 'floor';
+  const under = roofUnder(s, polygonCentroid(points));
+  const rise = Math.max(0.2, Number(s.pendingBlock?.h) || DECK_RISE[kind]);
+  const name = kind === 'floor' ? `Roof on roof ${sectionsOf(s.sections, s.buildings, under.building).length}` : DECK_NAME[kind];
+  s.addSection({
+    id: newId('r'),
+    name,
+    deck: kind,
+    building: under.building,
+    points,
+    height: roofClearance(s.sections, points) + rise,
+    roofType: 'flat',
+    parapetH: 0,
+    parapetT: 0.23,
+  });
+  s.set({ pendingKey: null, pendingBlock: null });
 }
 
 function snapPoint(raw, pts, scale) {
@@ -81,8 +104,7 @@ function EdgeLabel({ a, b, toS, color = '#111827' }) {
 }
 
 const AMBER = '#f59e0b';
-const azOf = (e) => Math.round((((Math.atan2(e.outward.x, e.outward.y) * 180) / Math.PI) % 360 + 360) % 360);
-const sameWay = (a, b) => Math.abs(((a - b + 540) % 360) - 180) < 2;
+const azOf = (e) => edgeOutwardAz(e);
 
 /** Hip / Kerala roof overlay: the roof's edge, every slope outlined (ridges, hips, valleys) with a downhill arrow. */
 function HipMarks({ sec, toS }) {
@@ -121,7 +143,7 @@ function SlopeMarks({ section, toS, edit, onLowEdge, onRidgeDown }) {
   if (sec.frame.hip || sec.frame.plane) return <HipMarks sec={sec} toS={toS} />;
   const ridge = ridgeSegment(sec);
   const gable = sec.roofType === 'gable';
-  const isLow = (az) => sameWay(az, sec.frame.az) || (gable && sameWay(az, sec.frame.az + 180));
+  const isLow = (e) => (sec.roofType === 'shed' ? shedEdgeKind(sec, e.a, e.b) === 'low' : azimuthsMatch(azOf(e), sec.frame.az) || (gable && azimuthsMatch(azOf(e), sec.frame.az + 180)));
   const roofEdges = edges(sec.poly).filter((e) => e.length >= 0.8);
   const mid = ridge && toS({ x: (ridge[0].x + ridge[1].x) / 2, y: (ridge[0].y + ridge[1].y) / 2 });
   return (
@@ -129,7 +151,7 @@ function SlopeMarks({ section, toS, edit, onLowEdge, onRidgeDown }) {
       {roofEdges.map((e, i) => {
         const a = toS(e.a);
         const b = toS(e.b);
-        const low = isLow(azOf(e));
+        const low = isLow(e);
         return (
           <g key={i}>
             {low && <line x1={a.x} y1={a.y} x2={b.x} y2={b.y} stroke={AMBER} strokeWidth={6} strokeLinecap="round" pointerEvents="none" />}
@@ -168,7 +190,7 @@ function SlopeMarks({ section, toS, edit, onLowEdge, onRidgeDown }) {
   );
 }
 
-export default function Editor2D({ design, showPanels = true, showObjects = true, editSections = false, slopeEdit = false, stringColors = null, stringPath = null, children }) {
+export default function Editor2D({ design, showPanels = true, showObjects = true, editSections = false, editRaised = false, slopeEdit = false, stringColors = null, stringPath = null, children }) {
   const ref = useRef(null);
   const [size, setSize] = useState({ w: 1000, h: 700 });
   const [view, setView] = useState({ cx: 0, cy: 0, scale: 14 });
@@ -189,6 +211,28 @@ export default function Editor2D({ design, showPanels = true, showObjects = true
   const objects = useStore((s) => s.objects);
   const config = useStore((s) => s.config);
   const st = useStore.getState;
+
+  // older drawings kept the lift and staircase as obstacles. They are flat roofs now, so panels can sit on them.
+  const deckBlocks = objects.filter((o) => o.type === 'block' && (/^lift room$/i.test(o.name || '') || /^staircase room$/i.test(o.name || ''))).map((o) => o.id).join();
+  const untaggedRoofs = sections.some((sec) => !sec.deck && /^roof on roof/i.test(sec.name || ''));
+  useEffect(() => {
+    const s = st();
+    if (!s.sections.length) return;
+    const kindOf = (name) => (/^lift room$/i.test(name || '') ? 'lift' : /^staircase room$/i.test(name || '') ? 'stair' : null);
+    const blocks = s.objects.filter((o) => o.type === 'block' && kindOf(o.name));
+    const tag = s.sections.some((sec) => !sec.deck && /^roof on roof/i.test(sec.name || ''));
+    if (!blocks.length && !tag) return;
+    let next = s.sections.map((sec) => (!sec.deck && /^roof on roof/i.test(sec.name || '') ? { ...sec, deck: 'floor', roofType: 'flat', parapetH: 0 } : sec));
+    const drop = new Set();
+    for (const b of blocks) {
+      const points = b.points?.length >= 3 ? b.points : rectPoly(b.x, b.y, Math.max(0.4, b.w || 3), Math.max(0.4, b.d || 3), b.rot || 0);
+      const kind = kindOf(b.name);
+      const under = roofUnder({ ...s, sections: next }, polygonCentroid(points));
+      next = [...next, { id: b.id, name: b.name, deck: kind, building: under.building, points, height: roofClearance(next, points) + Math.max(0.2, b.h || DECK_RISE[kind]), roofType: 'flat', parapetH: 0, parapetT: 0.23 }];
+      drop.add(b.id);
+    }
+    s.set({ sections: next, objects: drop.size ? s.objects.filter((o) => !drop.has(o.id)) : s.objects, layoutKey: '' });
+  }, [deckBlocks, untaggedRoofs, st]);
 
   useEffect(() => {
     const el = ref.current;
@@ -248,15 +292,29 @@ export default function Editor2D({ design, showPanels = true, showObjects = true
     if (points.length < 3) return;
     const s = st();
     if (tool === 'draw-section') {
-      if (s.pendingKey === 'building' || !s.sections.length) {
+      const drawn = { other: ['Other', 'block', 1], tree: ['Tree', 'tree', 6] }[s.pendingKey];
+      if (drawn) {
+        const [name, kind, h] = drawn;
+        const c = polygonCentroid(points);
+        if (kind === 'tree') {
+          const r = Math.max(0.4, ...points.map((p) => Math.hypot(p.x - c.x, p.y - c.y)));
+          s.addObject({ id: newId('t'), type: 'tree', name, x: c.x, y: c.y, r, h: s.pendingBlock?.h || h });
+        } else {
+          s.addObject({ id: newId('b'), type: 'block', name, h: s.pendingBlock?.h || h, points, x: c.x, y: c.y });
+        }
+        s.set({ pendingKey: null, pendingBlock: null });
+        setDraft([]);
+        return;
+      }
+      if (s.pendingKey === 'stair' || s.pendingKey === 'lift' || s.pendingKey === 'floor') {
+        addFlatDeck(s, s.pendingKey, points);
+      } else if (s.pendingKey === 'building' || !s.sections.length) {
         // the main roof of a building: the design's first one, or a new building on the campus
         const building = s.sections.length ? s.addBuilding() : buildingList(s.buildings)[0].id;
         s.addSection({ id: newId('r'), name: 'Main roof', building, points, height: 6, parapetH: 1, parapetT: 0.23 });
         s.set({ pendingKey: null, buildingId: building });
       } else {
-        const under = roofUnder(s, polygonCentroid(points));
-        s.addSection({ id: newId('r'), name: `Roof on roof ${sectionsOf(s.sections, s.buildings, under.building).length}`, building: under.building, points, height: (under.main?.height || 6) + 2.7, parapetH: 0.3, parapetT: 0.23 });
-        s.set({ pendingKey: null });
+        addFlatDeck(s, 'floor', points);
       }
     } else {
       s.addObject({ id: newId('z'), type: 'zone', points, tilt: config.tilt, azimuth: design.defaultAzimuth, frontLeg: config.frontLeg, rowsPerTable: config.rowsPerTable, orientation: config.orientation, rowGap: config.rowGap });
@@ -380,8 +438,14 @@ export default function Editor2D({ design, showPanels = true, showObjects = true
     } else if (d.kind === 'move') {
       const dx = w.x - d.start.x;
       const dy = w.y - d.start.y;
-      if (d.points) (d.isSection ? s.updateSection : s.updateObject)(d.id, { points: d.points.map((p) => ({ x: p.x + dx, y: p.y + dy })) });
-      else {
+      if (d.points) {
+        const points = d.points.map((p) => ({ x: p.x + dx, y: p.y + dy }));
+        if (d.isSection) s.updateSection(d.id, { points });
+        else {
+          const c = polygonCentroid(points);
+          s.updateObject(d.id, { points, x: c.x, y: c.y });
+        }
+      } else {
         const o = s.objects.find((k) => k.id === d.id);
         const pos = { x: d.x + dx, y: d.y + dy };
         s.updateObject(d.id, o?.type === 'array' && !e.altKey ? magnetize(o, pos, design) : pos);
@@ -400,7 +464,11 @@ export default function Editor2D({ design, showPanels = true, showObjects = true
       st().updateSection(d.sectionId, { ridge, pitch });
     } else if (d.kind === 'vertex') {
       const points = d.points.map((p, i) => (i === d.index ? w : p));
-      (d.isSection ? s.updateSection : s.updateObject)(d.id, { points });
+      if (d.isSection) s.updateSection(d.id, { points });
+      else {
+        const c = polygonCentroid(points);
+        s.updateObject(d.id, { points, x: c.x, y: c.y });
+      }
     } else if (d.kind === 'resize-table') {
       const o = s.objects.find((k) => k.id === d.id);
       if (!o) return;
@@ -414,6 +482,10 @@ export default function Editor2D({ design, showPanels = true, showObjects = true
       const lv = (w.x - o.x) * Math.sin(a) + (w.y - o.y) * Math.cos(a);
       s.updateObject(o.id, { w: Math.max(0.4, Math.round(Math.abs(lu) * 20) / 10), d: Math.max(0.4, Math.round(Math.abs(lv) * 20) / 10) });
     } else if (d.kind === 'radius') s.updateObject(d.id, { r: Math.max(0.5, dist(w, d.center)) });
+    else if (d.kind === 'tank-diameter') {
+      const diameter = Math.max(0.4, dist(w, d.center) * 2);
+      s.updateObject(d.id, { w: diameter, d: diameter });
+    }
     else if (d.kind === 'rotate') {
       let az = (Math.atan2(w.x - d.center.x, w.y - d.center.y) / DEG + 360) % 360;
       if (e.shiftKey) az = Math.round(az / 15) * 15;
@@ -436,14 +508,16 @@ export default function Editor2D({ design, showPanels = true, showObjects = true
       const preset = s.pendingBlock || {};
       const r = area && (area.w > 0.5 || area.d > 0.5) ? area : null;
       setArea(null);
-      if (kind === 'tree') {
+      if (kind === 'tank') {
+        const reach = r ? Math.hypot(r.end.x - d.start.x, r.end.y - d.start.y) : 0.75;
+        s.addObject({ id: newId('b'), type: 'block', name: 'Water tank', shape: 'cylinder', x: d.start.x, y: d.start.y, w: Math.max(0.4, reach * 2), d: Math.max(0.4, reach * 2), h: s.pendingBlock?.h || 1.5, rot: 0 });
+      } else if (kind === 'tree') {
         const rad = r ? Math.max(1, Math.hypot(r.end.x - r.start.x, r.end.y - r.start.y) / 2) : 2.5;
         const c = r ? { x: (r.start.x + r.end.x) / 2, y: (r.start.y + r.end.y) / 2 } : d.start;
         s.addObject({ id: newId('t'), type: 'tree', x: c.x, y: c.y, r: rad, h: Math.max(5, rad * 3) });
-      } else if (kind === 'floor') {
+      } else if (kind === 'floor' || kind === 'stair' || kind === 'lift') {
         const q = r || areaRect({ x: d.start.x - 2, y: d.start.y - 2 }, { x: d.start.x + 2, y: d.start.y + 2 });
-        const under = roofUnder(s, q.center);
-        s.addSection({ id: newId('r'), name: 'Roof on roof', building: under.building, points: rectPoly(q.center.x, q.center.y, Math.max(q.w, 1), Math.max(q.d, 1), q.az), height: (under.main?.height || 3) + 2.7, parapetH: 0.3, parapetT: 0.2 });
+        addFlatDeck(s, kind, rectPoly(q.center.x, q.center.y, Math.max(q.w, 1), Math.max(q.d, 1), q.az));
       } else {
         const c = r ? r.center : d.start;
         s.addObject({ id: newId('b'), type: 'block', name: 'Object', h: 1.8, ...preset, x: c.x, y: c.y, w: r ? Math.max(r.w, 0.4) : preset.w || 1.5, d: r ? Math.max(r.d, 0.4) : preset.d || 1.5, rot: design.defaultAzimuth });
@@ -492,27 +566,32 @@ export default function Editor2D({ design, showPanels = true, showObjects = true
 
         {/* roof sections */}
         {sections.map((s) => {
-          const sel = s.id === selectedId && editSections;
+          const raised = editRaised && !isMainSection(sections, buildings, s);
+          const shape = editSections || raised;
+          const sel = s.id === selectedId && shape;
           return (
             <g key={s.id}>
               <polygon
                 points={pts(s.points)}
-                fill={editSections ? 'rgba(180,195,255,0.35)' : 'rgba(180,195,255,0.12)'}
+                fill={shape ? 'rgba(180,195,255,0.35)' : 'rgba(180,195,255,0.12)'}
                 stroke={BLUE}
-                strokeWidth={editSections ? 3 : 2}
+                strokeWidth={shape ? 3 : 2}
                 strokeLinejoin="round"
-                onPointerDown={editSections ? (e) => startDrag(e, { kind: 'move', id: s.id, points: s.points, isSection: true }) : undefined}
+                onPointerDown={shape ? (e) => startDrag(e, { kind: 'move', id: s.id, points: s.points, isSection: true }) : undefined}
               />
               <SlopeMarks
                 section={s}
                 toS={toS}
                 edit={slopeEdit && s.id === mainSection(sections, buildings, currentBuilding)?.id && tool === 'select' && !drawing}
-                onLowEdge={(slopeAz) => st().updateSection(s.id, { slopeAz })}
+                onLowEdge={(slopeAz) => {
+                  const poly = normSection({ ...s, roofType: 'flat' }).poly;
+                  st().updateSection(s.id, { slopeAz: snapSlopeAz(poly, slopeAz), slopeAzSnap: true });
+                }}
                 onRidgeDown={(e) => startDrag(e, { kind: 'ridge', sectionId: s.id })}
               />
-              {editSections && s.points.map((p, i) => <EdgeLabel key={i} a={p} b={s.points[(i + 1) % s.points.length]} toS={toS} />)}
+              {shape && s.points.map((p, i) => <EdgeLabel key={i} a={p} b={s.points[(i + 1) % s.points.length]} toS={toS} />)}
               {sel && vertexHandles(s.id, s.points, true)}
-              {editSections && !sel && s.points.map((p, i) => <circle key={i} cx={toS(p).x} cy={toS(p).y} r={5} fill="#fff" stroke={BLUE} strokeWidth={2} pointerEvents="none" />)}
+              {shape && !sel && s.points.map((p, i) => <circle key={i} cx={toS(p).x} cy={toS(p).y} r={5} fill="#fff" stroke={BLUE} strokeWidth={2} pointerEvents="none" />)}
             </g>
           );
         })}
@@ -537,15 +616,23 @@ export default function Editor2D({ design, showPanels = true, showObjects = true
             .filter((o) => o.type === 'block')
             .map((b) => {
               const sel = b.id === selectedId;
-              const poly = rectPoly(b.x, b.y, b.w, b.d, b.rot || 0);
-              const c = toS(b);
+              const cylinder = isCylinder(b);
+              const poly = blockOutline(b);
+              const c = toS(cylinder ? b : polygonCentroid(poly));
+              const drawn = !cylinder && b.points?.length >= 3;
               return (
                 <g key={b.id}>
-                  <polygon points={pts(poly)} fill="rgba(239,68,68,0.35)" stroke="#ef4444" strokeWidth={sel ? 3 : 1.5} onPointerDown={(e) => startDrag(e, { kind: 'move', id: b.id, x: b.x, y: b.y })} />
-                  <text x={c.x} y={c.y + 4} textAnchor="middle" fontSize="11" fontWeight="600" fill="#fff" pointerEvents="none" style={{ paintOrder: 'stroke', stroke: '#7f1d1d', strokeWidth: 3 }}>
+                  {cylinder ? (
+                    <circle cx={c.x} cy={c.y} r={((b.w || 1.5) / 2) * view.scale} fill="rgba(31,41,55,0.45)" stroke="#1f2937" strokeWidth={sel ? 3 : 1.5} onPointerDown={(e) => startDrag(e, { kind: 'move', id: b.id, x: b.x, y: b.y })} />
+                  ) : (
+                    <polygon points={pts(poly)} fill="rgba(239,68,68,0.35)" stroke="#ef4444" strokeWidth={sel ? 3 : 1.5} onPointerDown={(e) => startDrag(e, drawn ? { kind: 'move', id: b.id, points: b.points } : { kind: 'move', id: b.id, x: b.x, y: b.y })} />
+                  )}
+                  <text x={c.x} y={c.y + 4} textAnchor="middle" fontSize="11" fontWeight="600" fill="#fff" pointerEvents="none" style={{ paintOrder: 'stroke', stroke: '#111', strokeWidth: 3 }}>
                     {b.name}
                   </text>
-                  {sel && <circle cx={toS(poly[2]).x} cy={toS(poly[2]).y} r={8} fill="#fff" stroke="#ef4444" strokeWidth={3} style={{ cursor: 'nwse-resize' }} onPointerDown={(e) => startDrag(e, { kind: 'resize-block', id: b.id })} />}
+                  {sel && cylinder && <circle cx={c.x + ((b.w || 1.5) / 2) * view.scale} cy={c.y} r={7} fill="#fff" stroke="#1f2937" strokeWidth={3} style={{ cursor: 'ew-resize' }} onPointerDown={(e) => startDrag(e, { kind: 'tank-diameter', id: b.id, center: { x: b.x, y: b.y } })} />}
+                  {sel && drawn && vertexHandles(b.id, b.points, false)}
+                  {sel && !drawn && !cylinder && <circle cx={toS(poly[2]).x} cy={toS(poly[2]).y} r={8} fill="#fff" stroke="#ef4444" strokeWidth={3} style={{ cursor: 'nwse-resize' }} onPointerDown={(e) => startDrag(e, { kind: 'resize-block', id: b.id })} />}
                 </g>
               );
             })}

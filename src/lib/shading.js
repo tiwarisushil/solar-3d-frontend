@@ -1,7 +1,7 @@
 // Annual beam-shading loss per module from parapets, raised roofs, obstructions, trees
 // and other tables. Rays are tested in plan (2D) with a height check at each crossing.
 
-import { rectPoly } from './geometry.js';
+import { blockOutline } from './model.js';
 import { sunSamples } from './sun.js';
 
 function raySeg(px, py, dx, dy, a, b) {
@@ -22,7 +22,7 @@ export function buildOccluders(design) {
   }
   for (const b of design.blocks) {
     const base = design.sections.reduce((h, s) => (s.height > h && inside(b, s.poly) ? s.height : h), 0);
-    prisms.push({ poly: rectPoly(b.x, b.y, b.w, b.d, b.rot || 0), lo: base, hi: base + b.h, id: b.id });
+    prisms.push({ poly: blockOutline(b), lo: base, hi: base + b.h, id: b.id });
   }
   for (const t of design.tables) {
     if (!t.valid) continue;

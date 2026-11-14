@@ -5,8 +5,8 @@
 // Nothing is read from Google's Solar API any more (its measurements were not good enough).
 
 import { useEffect } from 'react';
-import { ensureCCW } from './geometry.js';
-import { toLocal } from './geo.js';
+import { edges, ensureCCW } from './geometry.js';
+import { edgeOutwardAz, toLocal } from './geo.js';
 import { buildingAzimuth, newId, normSection } from './model.js';
 import { squareUp } from './squareUp.js';
 import { useStore } from './store.js';
@@ -28,10 +28,24 @@ export const ROOF_STYLES = [
 ];
 
 /** The style a roof section is drawn in (one of ROOF_STYLES). */
-export const roofStyleOf = (sec) => (!sec.roofType || sec.roofType === 'flat' ? 'flat' : sec.roofType === 'shed' ? 'shed' : sec.roofType === 'gable' ? 'gable' : sec.ends === 'gable' || sec.ends === 'kerala' ? sec.ends : 'hip');
+// a hip roof with triangle ends is still a "four slopes" house here: only the two-slope roof counts as "two slopes"
+export const roofStyleOf = (sec) => (!sec.roofType || sec.roofType === 'flat' ? 'flat' : sec.roofType === 'shed' ? 'shed' : sec.roofType === 'gable' ? 'gable' : sec.ends === 'kerala' ? 'kerala' : 'hip');
 
 /** The side a single-slope roof falls to when none was chosen: the wall facing the sun. */
 export const defaultSlopeAz = (sec, lat = useStore.getState().origin?.lat ?? 20) => buildingAzimuth([normSection({ ...sec, roofType: 'flat' })], lat);
+
+/** Two slopes fall towards the long walls (so the ridge runs along the house): the one facing the sun. */
+function gableLowAz(sec) {
+  const sunny = defaultSlopeAz(sec);
+  const es = edges(normSection({ ...sec, roofType: 'flat' }).poly).filter((e) => e.length >= 0.8);
+  if (!es.length) return sunny;
+  const longest = Math.max(...es.map((e) => e.length));
+  const diff = (a, b) => Math.abs(((a - b + 540) % 360) - 180);
+  return es
+    .filter((e) => e.length >= longest * 0.6)
+    .map((e) => edgeOutwardAz(e))
+    .reduce((best, az) => (diff(az, sunny) < diff(best, sunny) ? az : best));
+}
 
 /**
  * The same roof in another style or pitch: walls and outline stay, the roof on top changes. Uses the
@@ -39,15 +53,22 @@ export const defaultSlopeAz = (sec, lat = useStore.getState().origin?.lat ?? 20)
  * a sloped roof.
  */
 export function restyleRoof(sec, style, pitch = sec.pitch) {
+  if (sec.deck) return { ...sec, roofType: 'flat', parapetH: 0 };
   if (sec.ground) sec = { ...sec, ground: false }; // a type of house was picked: it is a building again
   const auto = sec.auto || {};
   const wasFlat = !sec.roofType || sec.roofType === 'flat'; // a drawn roof has no type until one is picked
   // a roof made before these heights were kept: about a storey's roof height between the two
   if (style === 'flat') return { ...sec, roofType: 'flat', height: auto.flatH ?? (wasFlat ? sec.height : sec.height + 1), parapetH: 0.9 };
-  const p = Math.max(10, Math.min(45, Math.round(pitch || auto.pitch || 25)));
+  const p = Math.max(1, Math.min(45, Math.round(pitch || auto.pitch || 25)));
   const wallH = auto.wallH ?? (wasFlat ? Math.max(2.4, sec.height - 1) : sec.height);
   // one plane falling towards `slopeAz` (the low wall is `height`); the side can be changed afterwards
   if (style === 'shed') return { ...sec, roofType: 'shed', pitch: p, slopeAz: sec.slopeAz ?? defaultSlopeAz(sec), height: wallH, parapetH: 0 };
+  // two slopes: exactly two planes meeting at one ridge, a triangle wall at each end. The ridge keeps the
+  // position it was moved to (`ridge`, the share of the width on the slope that faces `slopeAz`).
+  if (style === 'gable') {
+    const again = sec.roofType === 'gable';
+    return { ...sec, roofType: 'gable', pitch: p, slopeAz: again && sec.slopeAz != null ? sec.slopeAz : gableLowAz(sec), ridge: again ? sec.ridge : 0.5, rise2: again ? sec.rise2 : undefined, height: wallH, parapetH: 0 };
+  }
   return { ...sec, roofType: 'hip', ends: style, overhang: sec.overhang ?? 0.4, pitch: p, height: wallH, parapetH: 0 };
 }
 

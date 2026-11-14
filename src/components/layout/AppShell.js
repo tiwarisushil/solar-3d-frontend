@@ -59,6 +59,7 @@ const COUNT_FOR = {
   '/admin/plans': { key: 'plans' },
   '/admin/plan-requests': { key: 'planRequests' },
   '/admin/free-proposals': { key: 'freeProposals' }, // the new ones, not yet contacted
+  '/admin/contact-messages': { key: 'contactMessages' }, // Contact Us form, status new
 };
 
 const NAV_LINK_ACTIVE = 'bg-white/10 text-white shadow-[inset_3px_0_0_#ffffff]';

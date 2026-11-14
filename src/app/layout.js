@@ -1,4 +1,4 @@
-import { Geist, Geist_Mono } from 'next/font/google';
+import { Geist, Geist_Mono, Poppins } from 'next/font/google';
 import { LightboxHost, PdfViewerHost } from '@/components/kit';
 import Pwa from '@/components/pwa/Pwa';
 import RouteTracker from '@/components/RouteTracker';
@@ -6,6 +6,8 @@ import './globals.css';
 
 const geistSans = Geist({ variable: '--font-geist-sans', subsets: ['latin'] });
 const geistMono = Geist_Mono({ variable: '--font-geist-mono', subsets: ['latin'] });
+// used by the public landing page (and other marketing pages that opt in)
+const poppins = Poppins({ variable: '--font-poppins', subsets: ['latin'], weight: ['400', '500', '600', '700'] });
 
 const description = 'A workspace for solar companies: manage clients, design rooftop systems in 3D and send branded proposals.';
 
@@ -38,7 +40,7 @@ export const viewport = {
 
 export default function RootLayout({ children }) {
   return (
-    <html lang="en" className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}>
+    <html lang="en" className={`${geistSans.variable} ${geistMono.variable} ${poppins.variable} h-full antialiased`}>
       <body className="h-full overflow-hidden">
         {children}
         <RouteTracker />

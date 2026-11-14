@@ -378,6 +378,10 @@ export function pricingFrom3D(design, config) {
       });
     }
   }
+  // products added by hand, with or without a package
+  for (const x of cost.extraItems || []) {
+    lines.push({ name: x.name, detail: x.detail || 'Additional product', qty: Number(x.qty) || 1, unit: x.unit || 'Nos', rate: Number(x.price) || 0, amount: (Number(x.qty) || 1) * (Number(x.price) || 0), gstPercent: x.gstPercent != null && x.gstPercent !== '' ? Number(x.gstPercent) : defGst, hsn: x.hsn || '' });
+  }
   return buildPricing({
     lines,
     floorPlacement: cost.floorPlacement,

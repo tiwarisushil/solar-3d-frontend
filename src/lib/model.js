@@ -3,7 +3,7 @@
 // Everything is in local metres around the project origin (x east, y north).
 
 import { buildingIdOf, buildingList } from './buildings.js';
-import { DEG, normalizeAzimuth } from './geo.js';
+import { DEG, edgeOutwardAz, normalizeAzimuth } from './geo.js';
 import {
   circleHitsPoly,
   cleanPolygon,
@@ -61,17 +61,121 @@ export function roofShapeLabel(s) {
 export const FLUSH_STANDOFF = 0.1;
 
 export const isSloped = (s) => (s?.roofType === 'shed' || s?.roofType === 'gable' || s?.roofType === 'hip' || s?.roofType === 'plane') && s.pitch > 0;
+
+/**
+ * Snap a slope/low-edge bearing to the nearest real wall direction on `poly`.
+ * Prefers an edge that already matches `az`; otherwise the closest outward az (longest wall on ties).
+ */
+/** Low-edge bearing stored on the section: snap to a wall when `slopeAzSnap` is set, else use exact degrees. */
+export function resolveSlopeAz(poly, az, snapToWalls = true) {
+  const n = Math.round(normalizeAzimuth(az ?? 180));
+  if (!snapToWalls || !poly?.length || poly.length < 3) return n;
+  return snapSlopeAz(poly, n);
+}
+
+/** Longest wall whose outward bearing is nearest `az` (exact edge, not a rounded compass guess). */
+function shedEaveEdge(poly, az) {
+  const want = normalizeAzimuth(az ?? 180);
+  let best = null;
+  let bestDiff = Infinity;
+  for (const e of edges(poly)) {
+    if (e.length < 0.8) continue;
+    const diff = Math.abs(((edgeOutwardAz(e) - want + 540) % 360) - 180);
+    if (diff < bestDiff || (diff === bestDiff && best && e.length > best.length)) {
+      bestDiff = diff;
+      best = e;
+    }
+  }
+  return best;
+}
+
+export function snapSlopeAz(poly, az) {
+  const allowed = shedLowBearings(poly);
+  const want = normalizeAzimuth(az ?? 180);
+  if (!allowed.length) return Math.round(want);
+  let best = allowed[0];
+  let bestDiff = Infinity;
+  for (const eaz of allowed) {
+    const diff = Math.abs(((eaz - want + 540) % 360) - 180);
+    if (diff < bestDiff) {
+      bestDiff = diff;
+      best = eaz;
+    }
+  }
+  return best;
+}
+
+/**
+ * Walls a single slope may fall toward: the building's two axes only (a wall and the three
+ * square to it). A diagonal or a short chamfer is left out — falling that way cuts across
+ * the corners and the roof no longer sits on the walls.
+ */
+export function shedLowBearings(poly) {
+  const es = edges(poly).filter((e) => e.length >= 0.8);
+  if (!es.length) return [];
+  const longest = es.reduce((a, b) => (b.length > a.length ? b : a));
+  const base = edgeOutwardAz(longest);
+  const axes = [0, 90, 180, 270].map((d) => normalizeAzimuth(base + d));
+  const best = new Map();
+  for (const e of es) {
+    const az = edgeOutwardAz(e);
+    let axis = 0;
+    let axisDiff = Infinity;
+    axes.forEach((axisAz, i) => {
+      const diff = Math.abs(((az - axisAz + 540) % 360) - 180);
+      if (diff < axisDiff) {
+        axisDiff = diff;
+        axis = i;
+      }
+    });
+    if (axisDiff > 18) continue;
+    const prev = best.get(axis);
+    if (!prev || e.length > prev.len) best.set(axis, { az, len: e.length });
+  }
+  return [...best.values()].map((v) => v.az).sort((a, b) => a - b);
+}
+
+/** Single-slope frame: eave is exactly the chosen wall, ridge is straight uphill from it. */
+export function shedFrame(poly, az, pitch, height) {
+  const edge = shedEaveEdge(poly, snapSlopeAz(poly, az));
+  const f = edge
+    ? { x: edge.outward.x, y: edge.outward.y }
+    : { x: Math.sin(normalizeAzimuth(az ?? 180) * DEG), y: Math.cos(normalizeAzimuth(az ?? 180) * DEG) };
+  const proj = (p) => p.x * f.x + p.y * f.y;
+  const dEave = edge ? proj(edge.a) : projectRange(poly, f.x, f.y)[1];
+  const dMin = Math.min(...poly.map(proj));
+  const tan = Math.tan(pitch * DEG);
+  const bearing = edge ? edgeOutwardAz(edge) : Math.round(normalizeAzimuth(az ?? 180));
+  return {
+    f,
+    az: bearing,
+    dMin,
+    dMax: dEave,
+    dMid: dMin,
+    tan,
+    tan2: 0,
+    rise: Math.max(0, dEave - dMin) * tan,
+    rise2: 0,
+    eave2: height,
+    wallBase: height,
+    ridge: 1,
+    pitch2: 0,
+  };
+}
+
 /** Under this pitch a measured roof face counts as flat: panels go on tilted frames. */
 export const FLAT_PLANE_PITCH = 4;
 
 export function normSection(s) {
   const poly = ensureCCW(cleanPolygon(s.points));
+  // a staircase room, lift room or roof on roof is always a flat slab panels can sit on
+  if (s.deck) return { ...s, poly, roofType: 'flat', frame: null, parapetH: 0 };
   // a roof face measured by Google: one plane through its centre (height above the ground there),
   // falling towards `slopeAz` at `pitch`
   if (s.roofType === 'plane' && poly.length >= 3) {
     if (!(s.pitch >= FLAT_PLANE_PITCH)) return { ...s, poly, roofType: 'flat', parapetH: 0, frame: null };
     const pitch = Math.min(70, s.pitch);
-    const az = normalizeAzimuth(s.slopeAz ?? 180);
+    const az = resolveSlopeAz(poly, s.slopeAz, s.slopeAzSnap !== false);
     const f = { x: Math.sin(az * DEG), y: Math.cos(az * DEG) };
     const tan = Math.tan(pitch * DEG);
     const c = s.centre || poly.reduce((m, p) => ({ x: m.x + p.x / poly.length, y: m.y + p.y / poly.length }), { x: 0, y: 0 });
@@ -86,23 +190,36 @@ export function normSection(s) {
     const frame = hipFrame(poly, { ...s, pitch });
     return { ...s, poly: frame.base, pitch, parapetH: 0, frame };
   }
-  const az = normalizeAzimuth(s.slopeAz ?? 180);
-  const f = { x: Math.sin(az * DEG), y: Math.cos(az * DEG) }; // downhill direction of the plane facing `az`
-  const [dMin, dMax] = projectRange(poly, f.x, f.y);
   const pitch = Math.min(60, Math.max(1, s.pitch));
+  if (s.roofType === 'shed') {
+    const frame = shedFrame(poly, s.slopeAz ?? 180, pitch, s.height);
+    return { ...s, poly, pitch, slopeAz: frame.az, parapetH: 0, frame };
+  }
+  const az = resolveSlopeAz(poly, s.slopeAz, s.slopeAzSnap !== false);
+  const f = { x: Math.sin(az * DEG), y: Math.cos(az * DEG) };
+  const [dMin, dMax] = projectRange(poly, f.x, f.y);
   const tan = Math.tan(pitch * DEG);
-  const gable = s.roofType === 'gable';
-  const ridge = gable ? Math.min(0.85, Math.max(0.15, s.ridge ?? 0.5)) : 1;
-  const dMid = dMax - ridge * (dMax - dMin); // plan position of the ridge (a shed's "ridge" is its high edge)
-  const rise = (dMax - dMid) * tan; // ridge height above the walls
+  const ridge = Math.min(0.85, Math.max(0.15, s.ridge ?? 0.5));
+  const dMid = dMax - ridge * (dMax - dMin);
+  const rise = (dMax - dMid) * tan;
   const span2 = dMid - dMin;
-  // the other slope: at most 60° steep, and its edge never drops below half a metre above the ground
-  const rise2 = gable ? Math.min(Math.max(0.05, s.rise2 > 0 ? s.rise2 : rise), span2 * Math.tan(60 * DEG), s.height + rise - 0.5) : 0;
-  const tan2 = gable ? rise2 / span2 : 0;
-  const eave2 = gable ? s.height + rise - rise2 : s.height; // height of the other slope's low edge
-  const frame = { f, az, dMin, dMax, dMid, tan, tan2, rise, rise2, eave2, wallBase: Math.min(s.height, eave2), ridge, pitch2: gable ? Math.round((Math.atan(tan2) / DEG) * 10) / 10 : 0 };
-  // a pitched roof has no boundary wall
+  const rise2 = Math.min(Math.max(0.05, s.rise2 > 0 ? s.rise2 : rise), span2 * Math.tan(60 * DEG), s.height + rise - 0.5);
+  const tan2 = rise2 / span2;
+  const eave2 = s.height + rise - rise2;
+  const frame = { f, az, dMin, dMax, dMid, tan, tan2, rise, rise2, eave2, wallBase: Math.min(s.height, eave2), ridge, pitch2: Math.round((Math.atan(tan2) / DEG) * 10) / 10 };
   return { ...s, poly, pitch, slopeAz: az, parapetH: 0, frame };
+}
+
+/** `low` | `high` | `side` for a shed roof edge in plan (uses projection along the fall line). */
+export function shedEdgeKind(sec, a, b) {
+  const fr = sec.frame;
+  if (!fr || sec.roofType !== 'shed') return 'side';
+  const eps = 0.08;
+  const da = a.x * fr.f.x + a.y * fr.f.y;
+  const db = b.x * fr.f.x + b.y * fr.f.y;
+  if (Math.abs(da - fr.dMax) < eps && Math.abs(db - fr.dMax) < eps) return 'low';
+  if (Math.abs(da - fr.dMin) < eps && Math.abs(db - fr.dMin) < eps) return 'high';
+  return 'side';
 }
 
 /** Roof surface height at a point of this section. */
@@ -183,6 +300,20 @@ export function roofHeightAt(sections, x, y) {
   return sec ? roofZ(sec, x, y) : 0;
 }
 
+/** Highest roof surface under an outline, ignoring one section (the slab being placed on top). */
+export function roofClearance(sections, points, ignoreId = null) {
+  if (!points?.length) return 0;
+  const c = points.reduce((m, p) => ({ x: m.x + p.x / points.length, y: m.y + p.y / points.length }), { x: 0, y: 0 });
+  let z = 0;
+  for (const p of [...points, c]) {
+    for (const raw of sections) {
+      if (raw.id === ignoreId || !(raw.points?.length >= 3) || !pointInPolygon(p, raw.points)) continue;
+      z = Math.max(z, roofZ(normSection(raw), p.x, p.y));
+    }
+  }
+  return z;
+}
+
 /**
  * Where panels may be auto-placed on a section, as fill zones. A flat roof is one zone using the
  * design's tilt / facing / leg height. A sloped roof gives one zone per slope, with panels flush on
@@ -214,7 +345,7 @@ export function buildingAzimuth(sections, lat) {
   let bestScore = Infinity;
   for (const e of edges(main.poly)) {
     if (e.length < 2) continue;
-    const az = normalizeAzimuth(Math.atan2(e.outward.x, e.outward.y) / DEG);
+    const az = edgeOutwardAz(e);
     const diff = Math.abs(((az - target + 540) % 360) - 180);
     const score = diff - e.length * 0.2;
     if (score < bestScore) {
@@ -222,7 +353,7 @@ export function buildingAzimuth(sections, lat) {
       best = az;
     }
   }
-  return Math.round(best);
+  return snapSlopeAz(main.poly, best);
 }
 
 export function resolveAzimuth(config, sections, lat) {
@@ -466,8 +597,28 @@ export function autoRowGap(tilt, slopeLen, lat) {
   return Math.min(rise / Math.tan(alt * DEG), rise * 3.5) + 0.15;
 }
 
+/** A water tank is a cylinder. Everything else keeps the outline that was drawn. */
+export const isCylinder = (b) => b?.shape === 'cylinder' || /tank/i.test(b?.name || '');
+
+/** Plan outline of an obstacle: a circle for a tank, the drawn shape, or the older width × depth box. */
+export function blockOutline(b) {
+  if (isCylinder(b)) {
+    const r = Math.max(0.2, (b.w || b.d || 1.5) / 2);
+    return Array.from({ length: 20 }, (_, i) => {
+      const a = (i / 20) * Math.PI * 2;
+      return { x: b.x + r * Math.cos(a), y: b.y + r * Math.sin(a) };
+    });
+  }
+  if (b.points?.length >= 3) return b.points;
+  return rectPoly(b.x, b.y, b.w || 1.5, b.d || 1.5, b.rot || 0);
+}
+
 function obstaclePolys(ctx) {
-  return ctx.blocks.map((b) => rectPoly(b.x, b.y, b.w + 0.3, b.d + 0.3, b.rot || 0));
+  return ctx.blocks.map((b) => {
+    const poly = blockOutline(b);
+    const grown = offsetPolygon(poly, -0.3);
+    return grown.length >= 3 ? grown : poly;
+  });
 }
 
 /** Can a rectangle (4 pts) host panels? Must sit on one roof section, clear of obstacles. */
@@ -478,6 +629,7 @@ export function rectPlacement(rect, ctx, { ignoreId = null, inset = 0.05 } = {})
   // a terrace keeps a walkway along the parapet; a pitched roof only needs a small margin from its edges;
   // a face measured by Google is already the area its panels fit in
   if (sec.google) inset = Math.min(inset, 0.02);
+  else if (sec.deck) inset = Math.min(inset, 0.15);
   else if (sec.frame) inset = Math.min(inset, 0.3);
   // a hipped roof reaches past its walls (the overhang): the margin is kept from the roof's own edge
   const edgePoly = sec.frame?.hip && sec.frame.roofPoly?.length >= 3 ? sec.frame.roofPoly : sec.poly;

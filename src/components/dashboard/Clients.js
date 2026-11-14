@@ -7,8 +7,8 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import { useEffect, useMemo, useState } from 'react';
 import { api } from '@/lib/api';
 import { useCan } from '@/lib/useCan';
-import { usePagedResource } from '@/lib/useResource';
-import { Alert, Avatar, Badge, Button, Card, ConfirmDialog, DateRangeFilter, EmptyState, Input, LoadMoreRow, LoadingBlock, PageHeader, RowMenu, Table, Td, Th, Tr, capName, formatDate, toast } from '../kit';
+import { usePaginatedResource } from '@/lib/useResource';
+import { Alert, Avatar, Badge, Button, Card, ConfirmDialog, DateRangeFilter, EmptyState, Input, LoadingBlock, PageHeader, RowMenu, Table, TablePagination, Td, Th, Tr, capName, formatDate, toast } from '../kit';
 import ClientCredentials from './ClientCredentials';
 import ClientForm from './ClientForm';
 
@@ -31,7 +31,8 @@ export default function Clients({ basePath = '/dashboard/clients' }) {
     const qs = p.toString();
     return `/api/clients${qs ? `?${qs}` : ''}`;
   }, [query, addedFrom, addedTo]);
-  const { items: rows, setItems: setData, total, loading, error, hasMore, loadingMore, loadMore } = usePagedResource(listPath, { limit: 100 });
+  const PAGE_SIZE = 10;
+  const { items: rows, setItems: setData, total, loading, error, page, setPage, totalPages } = usePaginatedResource(listPath, { limit: PAGE_SIZE });
   const [modal, setModal] = useState(null);
   const [busy, setBusy] = useState(false);
   const [modalError, setModalError] = useState('');
@@ -195,7 +196,7 @@ export default function Clients({ basePath = '/dashboard/clients' }) {
             </tbody>
           </Table>
         )}
-        <LoadMoreRow hasMore={hasMore} loadingMore={loadingMore} onClick={loadMore} loaded={rows?.length || 0} total={total} />
+        <TablePagination page={page} totalPages={totalPages} total={total} pageSize={PAGE_SIZE} onPageChange={setPage} />
       </Card>
 
       {modal?.type === 'form' && (

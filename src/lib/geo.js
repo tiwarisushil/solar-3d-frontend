@@ -75,6 +75,16 @@ export function normalizeAzimuth(a) {
   return ((a % 360) + 360) % 360;
 }
 
+/** Whether two compass bearings point the same way (within `tol` degrees). */
+export function azimuthsMatch(a, b, tol = 2) {
+  return Math.abs(((normalizeAzimuth(a) - normalizeAzimuth(b) + 540) % 360) - 180) < tol;
+}
+
+/** Outward-facing azimuth of a polygon edge ({ outward } from `edges()`). */
+export function edgeOutwardAz(e) {
+  return Math.round(normalizeAzimuth(Math.atan2(e.outward.x, e.outward.y) / DEG));
+}
+
 // ---------------------------------------------------------------------------------------------------------------
 // Typed coordinates: "31°19'17.8"N 77°35'15.6"E", "31.321611, 77.587667", "31.321611 N, 77.587667 E", "N 31.32 E 77.58".
 // Returns Google Maps order { lat, lng } (never GeoJSON [lng, lat]).

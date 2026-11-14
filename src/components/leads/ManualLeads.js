@@ -9,7 +9,7 @@ import { leadValue, valueText } from '@/lib/leadForm';
 import { isLeadStatusLocked, LEAD_CONVERTED_LOCK_HINT } from '@/lib/leads';
 import { useCan } from '@/lib/useCan';
 import { useResource } from '@/lib/useResource';
-import { Alert, Badge, Button, Card, EmptyState, FormField, FormModal, Input, LoadingBlock, Modal, PageHeader, Select, Table, TablePagination, Td, Textarea, Th, Tr, capName, cx, formatDate, timeAgo, toast } from '../kit';
+import { Alert, Badge, Button, Card, DateRangeFilter, EmptyState, FormField, FormModal, Input, LoadingBlock, Modal, PageHeader, Select, Table, TablePagination, Td, Textarea, Th, Tr, capName, cx, formatDate, timeAgo, toast } from '../kit';
 import { PRIORITY_FILTER_OPTIONS } from '@/components/admin/leads/PriorityToggle';
 import ExportAllLeadsButton from '../admin/leads/ExportAllLeadsButton';
 import LeadListFilterBar from './LeadListFilterBar';
@@ -113,8 +113,11 @@ export default function ManualLeads() {
   const statuses = statusesRes.data || [];
   const assignees = assigneesRes.data || [];
 
-  const EMPTY_FILTERS = { search: '', assignedTo: '', statusId: '', source: '', priority: '', schedule: '', fromDate: '', toDate: '' };
+  const EMPTY_FILTERS = { search: '', assignedTo: '', statusId: '', source: '', priority: '', schedule: '', fromDate: '', toDate: '', scheduleFrom: '', scheduleTo: '' };
   const [filters, setFilters] = useState(EMPTY_FILTERS);
+  // the date filter for a status that asks for a date (callback, site visit…); hidden for other statuses
+  const selectedStatus = statuses.find((s) => s._id === filters.statusId);
+  const scheduleDateOn = Boolean(selectedStatus?.requiresDate);
   const [query, setQuery] = useState('');
   const [page, setPage] = useState(1);
   const [state, setState] = useState({ leads: [], total: 0, totalPages: 1, loading: true, error: '' });
@@ -133,6 +136,8 @@ export default function ManualLeads() {
     if (filters.source) params.set('source', filters.source);
     if (filters.priority) params.set('priority', filters.priority);
     if (filters.schedule) params.set('schedule', filters.schedule);
+    if (scheduleDateOn && filters.scheduleFrom) params.set('scheduleFrom', filters.scheduleFrom);
+    if (scheduleDateOn && filters.scheduleTo) params.set('scheduleTo', filters.scheduleTo);
     if (filters.fromDate) params.set('from', filters.fromDate);
     if (filters.toDate) params.set('to', filters.toDate);
     try {
@@ -141,12 +146,12 @@ export default function ManualLeads() {
     } catch (e) {
       setState((s) => ({ ...s, loading: false, error: e.message }));
     }
-  }, [filters, page]);
+  }, [filters, page, scheduleDateOn]);
   useEffect(() => { load(); }, [load]);
 
   const setFilter = (k) => (v) => { setFilters((f) => ({ ...f, [k]: v })); setPage(1); };
   const clearFilters = () => { setQuery(''); setFilters(EMPTY_FILTERS); setPage(1); };
-  const extraFilterCount = [filters.assignedTo, filters.statusId, filters.source, filters.priority, filters.schedule, filters.fromDate, filters.toDate].filter(Boolean).length;
+  const extraFilterCount = [filters.assignedTo, filters.statusId, filters.source, filters.priority, filters.schedule, filters.fromDate, filters.toDate, scheduleDateOn && (filters.scheduleFrom || filters.scheduleTo) ? 'date' : ''].filter(Boolean).length;
   const replaceLead = (lead) => {
     setState((s) => ({ ...s, leads: s.leads.map((l) => (l._id === lead._id ? lead : l)) }));
     setModal((m) => (m?.lead?._id === lead._id ? { ...m, lead } : m));
@@ -208,12 +213,22 @@ export default function ManualLeads() {
           </FormField>
         )}
         <FormField label="Status">
-          <Select aria-label="Status" value={filters.statusId} onValue={setFilter('statusId')}>
+          <Select aria-label="Status" value={filters.statusId} onValue={(v) => { setFilters((f) => ({ ...f, statusId: v, scheduleFrom: '', scheduleTo: '' })); setPage(1); }}>
             <option value="">Any status</option>
             <option value="none">Not started</option>
             {statuses.map((s) => <option key={s._id} value={s._id}>{s.name}</option>)}
           </Select>
         </FormField>
+        {scheduleDateOn && (
+          <div className="sm:col-span-2">
+            <DateRangeFilter
+              label={`${selectedStatus.name} date`}
+              from={filters.scheduleFrom}
+              to={filters.scheduleTo}
+              onChange={({ from, to }) => { setFilters((f) => ({ ...f, scheduleFrom: from, scheduleTo: to })); setPage(1); }}
+            />
+          </div>
+        )}
         <FormField label="Priority">
           <Select aria-label="Priority" value={filters.priority} onValue={setFilter('priority')}>
             {PRIORITY_FILTER_OPTIONS.map((o) => <option key={o.value || 'all'} value={o.value}>{o.label}</option>)}

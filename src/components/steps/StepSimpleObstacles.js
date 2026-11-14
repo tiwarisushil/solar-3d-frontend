@@ -88,7 +88,7 @@ function HipControls({ main, frame, update }) {
         <label htmlFor="hip-pitch" className="shrink-0 text-sm font-semibold">How steep?</label>
         <span className="text-right text-sm"><b className="text-base tabular-nums">{pitch}°</b> <span className="text-xs text-slate-500">· top is {frame.rise.toFixed(1)} m ({(frame.rise * FT).toFixed(0)} ft) above the walls</span></span>
       </div>
-      <input id="hip-pitch" type="range" min={10} max={50} step={1} value={pitch} onChange={(e) => update({ pitch: Number(e.target.value) })} className="mt-1.5 h-2 w-full cursor-pointer accent-brand" />
+      <input id="hip-pitch" type="range" min={1} max={50} step={1} value={pitch} onChange={(e) => update({ pitch: Number(e.target.value) })} className="mt-1.5 h-2 w-full cursor-pointer accent-brand" />
       <div className="mt-1.5 flex gap-1.5">
         {[[20, 'Gentle'], [28, 'Normal'], [35, 'Steep']].map(([v, l]) => (
           <button key={l} type="button" onClick={() => update({ pitch: v })} className={cx('flex-1 rounded-full border px-2 py-1 text-xs font-medium', pitch === v ? 'border-brand bg-brand-soft text-brand-ink' : 'border-slate-200 text-slate-600 hover:bg-slate-50')}>{l} · {v}°</button>

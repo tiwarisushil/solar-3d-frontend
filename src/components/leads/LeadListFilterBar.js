@@ -2,7 +2,7 @@
 
 import { ChevronDown, Search, X } from 'lucide-react';
 import { useState } from 'react';
-import { Button, Card, cx, DateRangeFilter, FormField, Input } from '../kit';
+import { Button, Card, cx, DateRangeFilter, Input } from '../kit';
 
 const DEFAULT_PLACEHOLDER = 'Search name, phone, assigned to, status or date (e.g. 16/10/2026)';
 
@@ -59,9 +59,7 @@ export default function LeadListFilterBar({
             {(onDateChange || showClear) && (
               <div className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-200 pt-4">
                 {onDateChange && (
-                  <FormField label={dateLabel} className="mb-0">
-                    <DateRangeFilter from={fromDate} to={toDate} onChange={onDateChange} />
-                  </FormField>
+                  <DateRangeFilter label={dateLabel} from={fromDate} to={toDate} onChange={onDateChange} />
                 )}
                 {showClear && onClear && (
                   <Button type="button" variant="ghost" size="sm" icon={X} onClick={onClear} className="shrink-0">
