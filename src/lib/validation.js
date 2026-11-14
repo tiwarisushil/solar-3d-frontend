@@ -127,7 +127,7 @@ const TICKET_CATEGORIES = ['technical', 'billing', 'account', 'other'];
 const TICKET_PRIORITIES = ['low', 'normal', 'high'];
 const CLIENT_TICKET_CATEGORIES = ['installation', 'service', 'billing', 'proposal', 'other'];
 const TICKET_STATUS = ['open', 'in_progress', 'resolved', 'closed'];
-export const CLIENT_PROJECT_TYPES = ['residential', 'industrial', 'commercial'];
+export const CLIENT_PROJECT_TYPES = ['residential', 'industrial', 'commercial', 'agricultural'];
 export const CLIENT_ROOF_TYPES = ['concrete', 'factory', 'tin_shed'];
 export const CLIENT_GRID_TYPES = ['on_grid', 'off_grid', 'hybrid'];
 
@@ -169,6 +169,7 @@ const companyProfile = {
   name: f.orgNameRequired,
   email: f.emailOptional,
   phone: f.phoneOptional,
+  alternatePhone: f.phoneOptional,
   address: f.textOptional(400, 'Address'),
   website: f.websiteOptional,
   taxId: f.gstinOptional,

@@ -43,7 +43,7 @@ function useCompanyForm(keys, schema) {
 }
 
 function Profile() {
-  const { form, set, save, busy, v } = useCompanyForm(['name', 'email', 'phone', 'website', 'taxId', 'pan', 'address']);
+  const { form, set, save, busy, v } = useCompanyForm(['name', 'email', 'phone', 'alternatePhone', 'website', 'taxId', 'pan', 'address']);
   return (
     <Card>
       <CardHeader title="Company profile" description="Printed in the “Prepared by” block and footer of every proposal." />
@@ -51,6 +51,7 @@ function Profile() {
         <FormField label="Company name" className="sm:col-span-2" error={v.error('name')}><NameInput kind="business" maxLength={120} value={form.name} onValue={(x) => set({ name: x })} /></FormField>
         <FormField label="Contact email" optional error={v.error('email')}><Input type="email" value={form.email} onValue={(x) => set({ email: x })} /></FormField>
         <FormField label="Phone" optional error={v.error('phone')}><PhoneInput maxLength={20} value={form.phone} onValue={(x) => set({ phone: x })} /></FormField>
+        <FormField label="Alternate phone" optional error={v.error('alternatePhone')}><PhoneInput maxLength={20} value={form.alternatePhone} onValue={(x) => set({ alternatePhone: x })} /></FormField>
         <FormField label="Website" optional error={v.error('website')}><Input maxLength={200} value={form.website} onValue={(x) => set({ website: x })} placeholder="www.company.com" /></FormField>
         <FormField label={taxIdName()} optional hint={currentTax().isGst ? '15 characters, like 27ABCDE1234F1Z5.' : 'Your tax registration number.'} error={v.error('taxId')}><Input maxLength={20} value={form.taxId} onValue={(x) => set({ taxId: x.replace(/[^A-Za-z0-9]/g, '').toUpperCase() })} className="uppercase" /></FormField>
         <FormField label="PAN" optional hint="10 characters, like ABCDE1234F." error={v.error('pan')}><Input maxLength={10} value={form.pan} onValue={(x) => set({ pan: x.replace(/[^A-Za-z0-9]/g, '').toUpperCase() })} className="uppercase" /></FormField>

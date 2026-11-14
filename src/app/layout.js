@@ -33,7 +33,7 @@ export const viewport = {
   width: 'device-width',
   initialScale: 1,
   viewportFit: 'cover',
-  themeColor: '#1d4ed8',
+  themeColor: '#F5B82E',
   colorScheme: 'light',
   interactiveWidget: 'resizes-content',
 };

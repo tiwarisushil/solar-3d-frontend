@@ -72,7 +72,7 @@ export function DesignStatusBadge({ status }) {
 
 export const designHref = (d) => d.type === 'quick' ? `/proposal/${d.id}` : `/design/${d.id}/${d.summary?.panels ? 'plan' : 'location'}`;
 
-export const PROJECT_TYPE_LABEL = { residential: 'Residential', industrial: 'Industrial', commercial: 'Commercial' };
+export const PROJECT_TYPE_LABEL = { residential: 'Residential', industrial: 'Industrial', commercial: 'Commercial', agricultural: 'Agricultural' };
 export const DESIGN_GRID_TYPES = ['on_grid', 'off_grid', 'hybrid'];
 export const GRID_TYPE_LABEL = { on_grid: 'On Grid', off_grid: 'Off Grid', hybrid: 'Hybrid' };
 export const ROOF_TYPE_LABEL = { concrete: 'Concrete', factory: 'Factory', tin_shed: 'Tin Shed' };
@@ -158,7 +158,24 @@ export function NewDesignModal({ clients = [], clientId, onClose }) {
         subsidy: { enabled: subsidyOn, central: subsidyOn ? Number(subsidyCentral) || 0 : 0, state: subsidyOn ? Number(subsidyState) || 0 : 0 },
       };
       if (kind === 'quick') {
-        const design = await api('/api/designs', { method: 'POST', body: { client, name, validUntil, type: 'quick', ...billingExtras } });
+        const design = await api('/api/designs', {
+          method: 'POST',
+          body: {
+            client,
+            name,
+            validUntil,
+            type: 'quick',
+            quote: {
+              pricingMode,
+              packageId: pricingMode === 'package' ? packageId : '',
+              withGst: true,
+              outlookYears: 10,
+              tariff: companyTariff,
+            },
+            ...billingExtras,
+            roofType: '',
+          },
+        });
         router.push(`/proposal/${design.id}`);
         return;
       }
@@ -222,7 +239,7 @@ export function NewDesignModal({ clients = [], clientId, onClose }) {
                   value={kind}
                   onChange={setKind}
                 />
-                {kind === 'quick' && <p className="-mt-2 text-[11px] text-slate-500">Pick packages/products, tax, floor and installation charges — no roof design needed.</p>}
+                {kind === 'quick' && <p className="-mt-2 text-[11px] text-slate-500">Same proposal pricing as with 3D — packages, products, tax and charges — without a roof design.</p>}
 
                 <FormSection icon={PenTool} tone="proposals" title="Proposal" hint="Who it is for and how long it holds">
                 <div className="grid gap-4 sm:grid-cols-2">
@@ -251,17 +268,15 @@ export function NewDesignModal({ clients = [], clientId, onClose }) {
                   <FormField label="Valid until" hint="The last day this proposal's price holds.">
                     <Input type="date" required min={toDateInput(new Date())} value={validUntil} onValue={setValidUntil} />
                   </FormField>
-                  {kind === '3d' && (
-                    <FormField label="Costing method" hint="How the price is worked out.">
-                      <Select value={pricingMode} onValue={setPricingMode}>
-                        <option value="package">Package</option>
-                        <option value="custom">Custom</option>
-                      </Select>
-                    </FormField>
-                  )}
+                  <FormField label="Costing method" hint="How the price is worked out.">
+                    <Select value={pricingMode} onValue={setPricingMode}>
+                      <option value="package">Package</option>
+                      <option value="custom">Custom</option>
+                    </Select>
+                  </FormField>
                 </div>
 
-                {kind === '3d' && pricingMode === 'package' && (
+                {pricingMode === 'package' && (
                   <FormField label="Select Package">
                     <Select value={packageId} onValue={setPackageId}>
                       {!packagesList.length && <option value="">Standard Package (built-in)</option>}
@@ -275,7 +290,7 @@ export function NewDesignModal({ clients = [], clientId, onClose }) {
                 )}
                 </FormSection>
 
-                <FormSection icon={MapPin} tone="installations" title="Site" hint="Shapes the design and the costing">
+                <FormSection icon={MapPin} tone="installations" title="Site" hint={kind === '3d' ? 'Shapes the design and the costing' : 'Shown on the proposal'}>
                 <div className="grid gap-4 sm:grid-cols-2">
                   <FormField label="Project type">
                     <Select value={projectType} onValue={setProjectType}>
@@ -293,20 +308,20 @@ export function NewDesignModal({ clients = [], clientId, onClose }) {
                   </FormField>
                 </div>
 
-                <div className="grid gap-4 sm:grid-cols-2">
-                  <FormField label="Roof type" optional>
-                    <Select value={roofType || ''} onValue={setRoofType}>
-                      <option value="">Not specified</option>
-                      {CLIENT_ROOF_TYPES.map((t) => (
-                        <option key={t} value={t}>{ROOF_TYPE_LABEL[t]}</option>
-                      ))}
-                    </Select>
-                  </FormField>
-                </div>
-                </FormSection>
                 {kind === '3d' && (
-                  <p className="text-[11px] text-slate-400">Floor placement, tariff and installation charges can be set inside the proposal editor next.</p>
+                  <div className="grid gap-4 sm:grid-cols-2">
+                    <FormField label="Roof type" optional>
+                      <Select value={roofType || ''} onValue={setRoofType}>
+                        <option value="">Not specified</option>
+                        {CLIENT_ROOF_TYPES.map((t) => (
+                          <option key={t} value={t}>{ROOF_TYPE_LABEL[t]}</option>
+                        ))}
+                      </Select>
+                    </FormField>
+                  </div>
                 )}
+                </FormSection>
+                <p className="text-[11px] text-slate-400">Floor placement, tariff and installation charges can be set inside the proposal editor next.</p>
               </div>
             )}
 

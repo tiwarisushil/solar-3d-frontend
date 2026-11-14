@@ -1,14 +1,14 @@
 'use client';
 
-// List ⇄ Board: the same leads, as a table or as a Kanban board by status.
-import { KanbanSquare, List } from 'lucide-react';
+// List ⇄ Board ⇄ Activity: the same leads as a table, Kanban by status, or activity feed.
+import { Activity, KanbanSquare, List } from 'lucide-react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { cx } from '../kit';
 
 /**
- * Where the list and the board live for the page we are on: the company's dashboard or the staff area, and all leads
- * or one source (Meta, Google Ads, Manual — each has its own list and its own board).
+ * Where the list, board and activity live for the page we are on: the company's dashboard or the staff area, and all
+ * leads or one source (Meta, Google Ads, Manual — each has its own list, board and activity).
  */
 export function leadPaths(pathname) {
   const path = pathname || '';
@@ -16,7 +16,14 @@ export function leadPaths(pathname) {
   const base = agent ? '/agent/leads' : '/dashboard/leads';
   const source = ['meta', 'google', 'manual'].find((s) => path === `${base}/${s}` || path.startsWith(`${base}/${s}/`)) || null;
   const list = source ? `${base}/${source}` : base;
-  return { agent, base, source, list, board: source ? `${base}/${source}/board` : `${base}/board` };
+  return {
+    agent,
+    base,
+    source,
+    list,
+    board: source ? `${base}/${source}/board` : `${base}/board`,
+    activity: source ? `${base}/${source}/activity` : `${base}/activity`,
+  };
 }
 
 export default function LeadViewSwitch({ view }) {
@@ -24,6 +31,7 @@ export default function LeadViewSwitch({ view }) {
   const VIEWS = [
     { id: 'list', label: 'List', icon: List, href: paths.list },
     { id: 'board', label: 'Pipeline', icon: KanbanSquare, href: paths.board },
+    { id: 'activity', label: 'Activity', icon: Activity, href: paths.activity },
   ];
   return (
     <div role="tablist" aria-label="Lead view" className="inline-flex rounded-lg border border-slate-200 bg-white p-0.5 text-sm">

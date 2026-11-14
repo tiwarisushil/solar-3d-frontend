@@ -98,7 +98,7 @@ function placeLogoTop(doc, img, x, y, maxW, maxH) {
 
 export function pageFooter(doc, company, brand, M = IM) {
   const pages = doc.getNumberOfPages();
-  const contact = [company.name, company.phone, company.email].filter(Boolean).join('   |   ');
+  const contact = [company.name, company.phone, company.alternatePhone, company.email].filter(Boolean).join('   |   ');
   for (let i = 1; i <= pages; i++) {
     doc.setPage(i);
     doc.setDrawColor(...LINE);

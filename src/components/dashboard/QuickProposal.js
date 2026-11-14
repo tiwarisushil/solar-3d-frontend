@@ -11,6 +11,7 @@ import { normalizeCatalog } from '@/lib/catalog';
 import { pricingFromQuote } from '@/lib/pricing';
 import { toDateInput, validUntilInput } from '@/lib/validity';
 import { generateQuotePdf } from '@/lib/pdf';
+import { QUOTE_PDF_PAGES } from '@/lib/pdfPages';
 import { SubsidyField } from './DesignDetail';
 import { DEFAULT_SYSTEM, computeQuoteSystem, deriveQuoteSystem, wattsFrom } from '@/lib/quoteModel';
 import { can } from '@/lib/permissions';
@@ -102,6 +103,13 @@ function Editor({ designId }) {
     const pkg = packages.find((p) => p.id === id);
     change({ ...(pkg?.kw ? { system: { ...quote.system, kwp: Number(pkg.kw) } } : {}), packageId: id, packagePrice: pkg ? num(pkg.price) : 0, bundle: (pkg?.items || []).map((it) => ({ panel: it.itemType === 'panel' || it.type === 'panels' ? { brand: it.brand, model: it.model, watts: Number(it.watts) || wattsFrom(it.model, it.spec, it.name) } : undefined, name: it.name, brand: it.brand, model: it.model, category: it.categoryName, detail: [it.brand && `Brand: ${it.brand}`, it.model && `Model: ${it.model}`, it.watts ? `${it.watts} W` : '', it.spec].filter(Boolean).join(' · '), qty: it.qty, unit: it.unit, price: num(it.price), hsn: it.hsnCode || '', gstPercent: it.gstPercent != null ? num(it.gstPercent) : undefined })) });
   };
+
+  // seed package lines when the proposal was created with a package but no bundle yet
+  useEffect(() => {
+    if (!quote || !packages?.length || quote.pricingMode !== 'package' || !quote.packageId) return;
+    if ((quote.bundle || []).length || (quote.items || []).length) return;
+    choosePackage(quote.packageId);
+  }, [quote?.packageId, quote?.pricingMode, packages]);
   const setMaterial = (cat, patch) => change({ materials: { ...quote.materials, [cat.id]: { ...(quote.materials[cat.id] || {}), ...patch } } });
   const chooseMaterial = (cat, productId) => {
     const p = cat.products.find((x) => x.id === productId);
@@ -132,10 +140,10 @@ function Editor({ designId }) {
       toast.error(e.message);
     }
   };
-  const download = async (cover) => {
+  const download = async (cover, pages) => {
     setExporting(true);
     try {
-      await generateQuotePdf({ quote, name: design.name, company, client: design.client, designId, proposalNo: design.proposalNo, currency, spec, count: sysInfo.count, tariff, validUntil: validUntil ? new Date(`${validUntil}T23:59:59`) : null, cover, subsidy: design.subsidy });
+      await generateQuotePdf({ quote, name: design.name, company, client: design.client, designId, proposalNo: design.proposalNo, currency, spec, count: sysInfo.count, tariff, validUntil: validUntil ? new Date(`${validUntil}T23:59:59`) : null, cover, subsidy: design.subsidy, pages });
       setPicking(false);
     } catch (e) {
       console.error(e);
@@ -345,7 +353,7 @@ function Editor({ designId }) {
         </Card>
       </div>
       {shareOpen && <ShareModal designId={designId} onClose={() => setShareOpen(false)} />}
-      <CoverPicker open={picking} onClose={() => setPicking(false)} onDownload={download} company={company} />
+      <CoverPicker open={picking} onClose={() => setPicking(false)} onDownload={download} company={company} pages={QUOTE_PDF_PAGES} />
     </div></div>
   );
 }

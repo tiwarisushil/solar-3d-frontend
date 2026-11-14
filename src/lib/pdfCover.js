@@ -360,7 +360,7 @@ export function cards(doc, r, p, y = 208) {
     icon: 'building',
     label: 'PREPARED BY',
     name: r.company.name,
-    rows: [['pin', r.company.address], ['phone', r.company.phone], ['mail', r.company.email], ['globe', r.company.website]],
+    rows: [['pin', r.company.address], ['phone', r.company.phone], ['phone', r.company.alternatePhone], ['mail', r.company.email], ['globe', r.company.website]],
     note: r.company.taxId && `${taxOf(r.company).idLabel}: ${r.company.taxId}`,
   });
   // closing note — or, when the proposal has a public link, the QR code that opens it
@@ -392,7 +392,7 @@ export function footer(doc, r) {
   doc.text('Solar   |   Sustainable   |   Reliable', 11, 289.3);
 
   // contacts, laid out from the right edge
-  const items = [['globe', r.company.website], ['mail', r.company.email], ['phone', r.company.phone]].filter(([, v]) => v);
+  const items = [['globe', r.company.website], ['mail', r.company.email], ['phone', r.company.phone], ['phone', r.company.alternatePhone]].filter(([, v]) => v);
   let x = W - 11;
   setText(doc, 8.3, 'normal', WHITE);
   const nameEnd = 11 + Math.min(80, doc.getTextWidth(r.company.name) * (11.5 / 8.3) * 1.08) + 8;

@@ -10,7 +10,7 @@ export default function manifest() {
     display_override: ['standalone', 'minimal-ui'],
     orientation: 'any',
     background_color: '#f4f6f9',
-    theme_color: '#1d4ed8',
+    theme_color: '#F5B82E',
     lang: 'en',
     dir: 'ltr',
     categories: ['business', 'productivity'],

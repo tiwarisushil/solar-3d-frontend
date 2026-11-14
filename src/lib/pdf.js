@@ -19,7 +19,7 @@ import { pricingFromQuote } from './pricing.js';
 import { compassLabel } from './geo.js';
 import { blockOutline, PATH_COLORS, ridgeSegment, roofShapeLabel } from './model.js';
 import { drawRichText, richTextIsEmpty } from './pdfRichText.js';
-import { drawSldSheet, sldSchedule, sldSheets } from './pdfSld.js'; // sldSchedule: the quote PDF's schedule
+import { drawSldSheet, sldSheets } from './pdfSld.js';
 import { appendShadowReport } from './shadowReport/shadowReportPdf.js';
 import { MONTHS } from './sun.js';
 import { netAfterSubsidy, subsidyOf } from './subsidy';
@@ -114,7 +114,7 @@ function newPage(doc, r, title) {
 /** Footer on proposal pages 2…`last`: contact line, page numbers out of the whole document. */
 function footers(doc, r, last = doc.getNumberOfPages(), first = 2) {
   const pages = doc.getNumberOfPages();
-  const contact = [r.company.name, r.company.phone, r.company.email, r.company.website].filter(Boolean).join('   |   ');
+  const contact = [r.company.name, r.company.phone, r.company.alternatePhone, r.company.email, r.company.website].filter(Boolean).join('   |   ');
   for (let i = first; i <= last; i++) {
     doc.setPage(i);
     doc.setDrawColor(...LINE);
@@ -606,7 +606,7 @@ export async function generatePdf({ design, project, place, finance, snapshot, c
   if (want('summary')) {
   y = newPage(doc, r, 'Proposal summary');
   text(doc, client.name ? `Dear ${client.name},` : 'Dear Customer,', M, y + 2, { size: 11, style: 'bold', color: INK });
-  const letter = `Thank you for the opportunity to propose a rooftop solar power system for ${r.address}. After analysing your roof, its orientation and the shading around it, we recommend a ${totals.kwp.toFixed(2)} kWp system built with ${totals.count} ${moduleName} modules of ${spec.watts} W. It is expected to generate about ${formatNumber(totals.acKwh)} kWh of clean electricity every year, saving approximately ${money(fin.firstYearSavings)} in the first year${fin.payback ? ` and paying for itself in about ${fin.payback.toFixed(1)} years` : ''}. The pages that follow describe the design, the equipment, the expected energy and the price in detail.`;
+  const letter = `Thank you for the opportunity to propose ${r.title || 'a rooftop solar power system'} for ${r.address}. After analysing your roof, its orientation and the shading around it, we recommend a ${totals.kwp.toFixed(2)} kWp system built with ${totals.count} ${moduleName} modules of ${spec.watts} W. It is expected to generate about ${formatNumber(totals.acKwh)} kWh of clean electricity every year, saving approximately ${money(fin.firstYearSavings)} in the first year${fin.payback ? ` and paying for itself in about ${fin.payback.toFixed(1)} years` : ''}. The pages that follow describe the design, the equipment, the expected energy and the price in detail.`;
   const letterLines = wrap(doc, letter, CW, 9.5);
   text(doc, letterLines, M, y + 9.5, { size: 9.5, color: BODY, lineHeight: 1.5 });
   y += 9.5 + letterLines.length * 5.05 + 5;
@@ -888,7 +888,9 @@ function monthlyOutlookPages(doc, r, { monthly, fin, tariff, years, finance, mon
  * `spec` and `count` are the solar module and how many of them the chosen package / panel product gives; the
  * location and orientation use the defaults in `quote.system`.
  */
-export async function generateQuotePdf({ quote, name = '', company = {}, client = {}, designId = '', proposalNo = '', currency = 'INR', spec, count, tariff = 8, validUntil = null, cover, subsidy = null, save = true }) {
+export async function generateQuotePdf({ quote, name = '', company = {}, client = {}, designId = '', proposalNo = '', currency = 'INR', spec, count, tariff = 8, validUntil = null, cover, subsidy = null, save = true, pages = null }) {
+  // `pages`: the parts to build (ids from lib/pdfPages QUOTE_PDF_PAGES); null builds the whole proposal
+  const want = (id) => !pages || pages.includes(id);
   company = { name: 'Solar proposal', ...company };
   client = { name: '', ...(client || {}) };
   const brand = await loadBranding(company);
@@ -933,13 +935,15 @@ export async function generateQuotePdf({ quote, name = '', company = {}, client 
   doc.setProperties({ title: `${r.title} - Solar proposal`, author: company.name, subject: `Solar proposal for ${client.name || 'client'}`, creator: company.name });
   const table = () => tableStyle(doc, r);
 
-  // 1 — cover (the same designed cover as the full proposal; without a render it shows the brand artwork)
-  await drawCoverStyle(doc, r, { totals, fin }, finance, null, cover);
+  // 1 — cover (without a front page, page 1 stays blank while building and is dropped at the end)
+  if (want('cover')) await drawCoverStyle(doc, r, { totals, fin }, finance, null, cover);
+  let y = 0;
 
   // 2 — summary
-  let y = newPage(doc, r, 'Proposal summary');
+  if (want('summary')) {
+  y = newPage(doc, r, 'Proposal summary');
   text(doc, client.name ? `Dear ${client.name},` : 'Dear Customer,', M, y + 2, { size: 11, style: 'bold', color: INK });
-  const letter = `Thank you for the opportunity to propose a rooftop solar power system${client.address ? ` for ${client.address}` : ''}. We recommend a ${totals.kwp.toFixed(2)} kWp system built with ${totals.count} ${moduleName} modules of ${spec.watts} W. It is expected to generate about ${formatNumber(totals.acKwh)} kWh of clean electricity every year, saving approximately ${money(fin.firstYearSavings)} in the first year${fin.payback ? ` and paying for itself in about ${fin.payback.toFixed(1)} years` : ''}. The pages that follow describe the system, the equipment, the expected energy and the price in detail.`;
+  const letter = `Thank you for the opportunity to propose ${r.title || 'a rooftop solar power system'}${client.address ? ` for ${client.address}` : ''}. We recommend a ${totals.kwp.toFixed(2)} kWp system built with ${totals.count} ${moduleName} modules of ${spec.watts} W. It is expected to generate about ${formatNumber(totals.acKwh)} kWh of clean electricity every year, saving approximately ${money(fin.firstYearSavings)} in the first year${fin.payback ? ` and paying for itself in about ${fin.payback.toFixed(1)} years` : ''}. The pages that follow describe the system, the equipment, the expected energy and the price in detail.`;
   const letterLines = wrap(doc, letter, CW, 9.5);
   text(doc, letterLines, M, y + 9.5, { size: 9.5, color: BODY, lineHeight: 1.5 });
   y += 9.5 + letterLines.length * 5.05 + 5;
@@ -977,20 +981,20 @@ export async function generateQuotePdf({ quote, name = '', company = {}, client 
     ['Clean energy', `${formatNumber(fin.lifetimeEnergy / 1000)} MWh`, `over ${years} years`],
   ], y, { cols: 3 });
   text(doc, 'Estimated with a grid emission factor of 0.7 kg CO2 per kWh and 21 kg CO2 absorbed per tree per year.', M, y + 21 + 5, { size: 7, color: MUTED });
+  }
 
   // 3 — system & electrical design
+  if (want('electrical')) {
   y = newPage(doc, r, 'System & electrical design');
   y = section(doc, r, 'Solar module', y);
   autoTable(doc, { ...table(), startY: y, head: [['Brand', 'Model', 'Power', 'Size', 'Mfg. year', 'Warranty', 'Qty']], body: [[spec.brand || '-', spec.model || '-', `${spec.watts} W`, `${spec.length} x ${spec.width} m`, spec.manufactureYear || '-', spec.warrantyYears != null ? `${spec.warrantyYears} years` : '-', totals.count]] });
   y = section(doc, r, 'Inverter & strings', doc.lastAutoTable.finalY + 8);
   y = specGrid(doc, [['Inverter', `${el.inverterCount || 0} x ${el.inverter?.kw ?? '-'} kW ${el.inverter?.kw <= 6 ? 'single-phase' : 'three-phase'}`], ['DC / AC ratio', el.dcAc ? el.dcAc.toFixed(2) : '-'], ['AC capacity', `${el.acKw ?? '-'} kW`], ['Modules per string', [...new Set(el.strings.map((st) => st.count))].sort((a, c) => a - c).join(' / ') || '-'], ['Allowed string length', `${el.minLen ?? '-'} to ${el.maxLen ?? '-'} modules`], ['Array orientation', `${sys.tilt}° tilt, facing ${compassLabel(Number(sys.azimuth))}`]], y) + 5;
   autoTable(doc, { ...table(), startY: y, head: [['String', 'Modules', 'Power', 'Voc STC', 'Voc cold', 'Isc', 'Inverter', 'MPPT']], body: el.strings.map((st) => [st.name, st.count, `${st.kwp.toFixed(2)} kWp`, `${st.voc.toFixed(0)} V`, `${st.vocCold.toFixed(0)} V`, `${st.isc} A`, `INV-${st.inverter}`, st.mppt ?? '-']) });
-  y = section(doc, r, 'Equipment schedule (sheet E-01)', ensure(doc, r, doc.lastAutoTable.finalY + 8, 40));
-  autoTable(doc, { ...table(), startY: y, styles: { ...table().styles, fontSize: 9, cellPadding: { top: 1.7, bottom: 1.7, left: 2.5, right: 2.5 } }, head: [['Tag', 'Item', 'Specification', 'Qty']], body: sldSchedule(el, spec, moduleName, totals.count), ...numeric(3), columnStyles: { 0: { cellWidth: 20, fontStyle: 'bold', textColor: INK }, 1: { cellWidth: 42 }, 3: { halign: 'right', cellWidth: 20 } } });
-  y = ensure(doc, r, doc.lastAutoTable.finalY + 4, 12);
-  text(doc, wrap(doc, 'Protection ratings follow general design factors (string fuse 1.5 to 2.4 x Isc where fuses are needed, DC isolator 1.25 x Isc per MPPT, AC breakers 1.25 x inverter output current); cable sizes are indicative. Final selection to be verified against the equipment datasheets, the standards in force and the DISCOM approval.', CW, 7.5), M, y, { size: 7.5, color: MUTED, lineHeight: 1.35 });
+  }
 
   // 4 — single line diagram
+  if (want('sld')) {
   y = newPage(doc, r, 'Single line diagram');
   y = section(doc, r, 'Single line diagram', y);
   const sldH = BOTTOM - y - 19 - 4;
@@ -1003,8 +1007,10 @@ export async function generateQuotePdf({ quote, name = '', company = {}, client 
     drawSldSheet(doc, sh, M, y);
     titleBlock(doc, r, sheets.length > 1 ? `E-01/${k + 1}` : 'E-01', 'Single line diagram', y + sldH + 4);
   });
+  }
 
   // 5 — energy & financials
+  if (want('energy')) {
   y = newPage(doc, r, 'Energy & financials');
   y = section(doc, r, 'Monthly energy production (kWh)', y);
   y = monthlyChart(doc, r, totals.monthly, y + 3) + 4;
@@ -1014,11 +1020,12 @@ export async function generateQuotePdf({ quote, name = '', company = {}, client 
   doc.lastAutoTable = { finalY: y };
   y = ensure(doc, r, doc.lastAutoTable.finalY + 6, 12);
   text(doc, wrap(doc, `Assumptions: performance ratio ${finance.efficiency}%, module degradation ${finance.degradation}% per year, electricity tariff held at the current rate of ${money(tariff, 2)} per kWh. Yield from a clear-sky model for latitude ${Number(sys.lat).toFixed(1)}° with a regional cloudiness factor; no site-specific shading analysis was made. Figures are indicative and should be verified on site.`, CW, 7.5), M, y, { size: 7.5, color: MUTED, lineHeight: 1.35 });
+  }
 
+  // 6 — monthly outlook + price & acceptance
+  if (want('monthly')) monthlyOutlookPages(doc, r, { monthly: totals.monthly, fin, tariff, years, finance, money });
 
-  // 6 — price & acceptance (its table already lists every product, so there is no separate bill of materials)
-  monthlyOutlookPages(doc, r, { monthly: totals.monthly, fin, tariff, years, finance, money });
-
+  if (want('price')) {
   y = newPage(doc, r, 'Price & acceptance');
   y = section(doc, r, `Price summary (${currency})`, y);
   const body = [];
@@ -1070,6 +1077,10 @@ export async function generateQuotePdf({ quote, name = '', company = {}, client 
   y += 13;
   const afterSubsidy = subsidyBlock(doc, r, y + 3, subsidy, pricing.total, money); // only when a subsidy applies
   signOff(doc, r, onlineBlock(doc, r, (afterSubsidy > y + 3 ? afterSubsidy : y) + 8) + 4);
+  }
+
+  // no front page: drop the blank first page (when anything else was built)
+  if (!want('cover') && doc.getNumberOfPages() > 1) doc.deletePage(1);
 
   footers(doc, r);
   const slug = (t) => String(t).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');

@@ -34,7 +34,7 @@ const LEAD_SERIES = [
 
 /** The dashboard's tabs; `alert` is the count shown on the tab when something there needs attention. */
 const TABS = [
-  { id: 'money', label: 'Money', icon: HandCoins, alert: () => 0 },
+  { id: 'money', label: 'Finances', icon: HandCoins, alert: () => 0 },
   { id: 'sales', label: 'Sales', icon: FileText, alert: (d, t) => t.proposals.changes + t.expiring.count },
   { id: 'leads', label: 'Leads', icon: Megaphone, alert: (d, t) => t.leads.unassigned },
   { id: 'installations', label: 'Installations', icon: HardHat, alert: (d, t) => t.installations.stuckCount + t.amc.overdue + t.amc.dueToday },

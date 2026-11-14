@@ -211,7 +211,7 @@ async function panelCover(doc, r, design, finance, snapshot) {
   setText(doc, 11, 'bold', WHITE);
   doc.text(lines(doc, r.company.name, iw, 11, 'bold')[0], x, y + 5.8);
   let cy = y + 13;
-  for (const [icon, value] of [['pin', r.company.address], ['phone', r.company.phone], ['mail', r.company.email], ['globe', r.company.website]].filter(([, v]) => v)) {
+  for (const [icon, value] of [['pin', r.company.address], ['phone', r.company.phone], ['phone', r.company.alternatePhone], ['mail', r.company.email], ['globe', r.company.website]].filter(([, v]) => v)) {
     const l = lines(doc, value, iw - 6.5, 8).slice(0, 2);
     drawIcon(doc, icon, x, cy - 2.9, 3.7, WHITE, 2.3);
     setText(doc, 8, 'normal', WHITE);
@@ -294,7 +294,7 @@ async function minimalCover(doc, r, design, finance, snapshot) {
   stats(doc, p, design, finance, { y: 188 });
   cards(doc, r, p, 236);
 
-  const contact = [r.company.name, r.company.website, r.company.email, r.company.phone].filter(Boolean).join('   |   ');
+  const contact = [r.company.name, r.company.website, r.company.email, r.company.phone, r.company.alternatePhone].filter(Boolean).join('   |   ');
   setText(doc, 8, 'normal', BODY);
   doc.text(lines(doc, contact, cw, 8)[0], W / 2, 292, { align: 'center' });
 }

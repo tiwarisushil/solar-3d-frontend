@@ -209,7 +209,11 @@ export default function CoverPicker({ open, ...props }) {
 function Picker({ onClose, onDownload, company, snapshot = null, title = 'Choose a front page', submitLabel = 'Download PDF', pages = null }) {
   const [style, setStyle] = useState(lastCover);
   const [busy, setBusy] = useState(false);
-  const [chosen, setChosen] = useState(() => (pages ? lastPages().filter((id) => pages.some((p) => p.id === id)) : null));
+  const [chosen, setChosen] = useState(() => {
+    if (!pages) return null;
+    const saved = lastPages().filter((id) => pages.some((p) => p.id === id));
+    return saved.length ? saved : pages.map((p) => p.id);
+  });
   const withCover = !chosen || chosen.includes('cover');
   const toggle = (id) => setChosen((c) => (c.includes(id) ? c.filter((x) => x !== id) : pages.map((p) => p.id).filter((x) => x === id || c.includes(x))));
   const allOn = pages && chosen.length === pages.length;

@@ -1,14 +1,20 @@
 // A company's product catalog (Dashboard → Product catalog): panels priced per piece, pillars per foot.
 
 /** Default “per …” labels; companies can edit their list under Dashboard → Product units. */
-export const DEFAULT_PRODUCT_UNITS = ['Piece', 'Nos', 'Set', 'Metre', 'Foot', 'Kg', 'Box', 'Roll', 'Lot', 'Bundle'];
+export const DEFAULT_PRODUCT_UNITS = [
+  'Nos', 'Piece', 'Set', 'Kit', 'System',
+  'Panel', 'Module', 'String',
+  'Metre', 'Foot', 'Mm', 'Kg',
+  'Watt', 'kW',
+  'Box', 'Roll', 'Coil', 'Bundle', 'Lot', 'Length',
+];
 
 /** "nos" → "Nos": upper-case the first letter, leave the rest as typed. */
 export const capFirst = (value) => {
   const s = String(value ?? '').trim();
   return s ? s[0].toUpperCase() + s.slice(1) : s;
 };
-export const MAX_PRODUCT_UNITS = 30;
+export const MAX_PRODUCT_UNITS = 60;
 
 export function productUnitsFor(company) {
   const units = company?.productUnits;

@@ -25,7 +25,7 @@ function context(company, client, currency) {
  */
 function letterhead(doc, brand, company, { title, no, subtitle, date, dateLabel = 'Date' }) {
   logoOrName(doc, { brand, company }, M, 12, 52, 14, 15);
-  const contact = [company.address, [company.phone, company.email].filter(Boolean).join('  |  '), company.website, company.taxId && `${currentTax().idLabel}: ${company.taxId}`].filter(Boolean);
+  const contact = [company.address, [company.phone, company.alternatePhone, company.email].filter(Boolean).join('  |  '), company.website, company.taxId && `${currentTax().idLabel}: ${company.taxId}`].filter(Boolean);
   let y = 32;
   for (const l of contact) {
     const lines = wrap(doc, l, 100, 8.5);
@@ -64,7 +64,7 @@ function party(doc, brand, x, y, w, heading, name, rows) {
 
 function pageFooter(doc, company, brand) {
   const pages = doc.getNumberOfPages();
-  const contact = [company.name, company.phone, company.email].filter(Boolean).join('   |   ');
+  const contact = [company.name, company.phone, company.alternatePhone, company.email].filter(Boolean).join('   |   ');
   for (let i = 1; i <= pages; i++) {
     doc.setPage(i);
     doc.setDrawColor(...LINE);

@@ -12,6 +12,7 @@ import { cx } from '../kit';
 /** Labels for segments the sidebar does not name (sub-pages, settings pages reached from elsewhere). */
 const SEGMENT_LABELS = {
   board: 'Pipeline',
+  activity: 'Activity',
   edit: 'Edit',
   new: 'New',
   roles: 'Roles',

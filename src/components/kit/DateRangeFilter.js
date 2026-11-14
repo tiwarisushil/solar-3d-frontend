@@ -105,12 +105,29 @@ function localIso(days = 0) {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 }
 
+/** Built-in quick ranges for activity (and similar) date filters. */
+export const DATE_PRESETS = {
+  today: { id: 'today', label: 'Today', fromDays: 0, toDays: 0 },
+  yesterday: { id: 'yesterday', label: 'Yesterday', fromDays: -1, toDays: -1 },
+  week: { id: 'week', label: 'One week', fromDays: -6, toDays: 0 },
+  /** Leads “Received” default: yesterday → today. */
+  recent: { id: 'recent', label: 'Today', fromDays: -1, toDays: 0 },
+};
+
 /**
  * Set both dates to filter lists on the server; clear both to show all. Values are `YYYY-MM-DD`.
- * Pass `label` to show a heading with a Today button (sets From = yesterday, to = today).
+ * Pass `label` to show a heading with quick-range buttons. `presets` defaults to a single Today (yesterday→today).
  */
-export function DateRangeFilter({ label, from = '', to = '', onChange, className }) {
+export function DateRangeFilter({
+  label,
+  from = '',
+  to = '',
+  onChange,
+  className,
+  presets = label ? [DATE_PRESETS.recent] : null,
+}) {
   const active = Boolean(from && to);
+  const buttons = Array.isArray(presets) ? presets : [];
 
   const range = (
     <div className={cx('flex flex-wrap items-center gap-3 text-sm text-slate-600', className)}>
@@ -134,16 +151,29 @@ export function DateRangeFilter({ label, from = '', to = '', onChange, className
 
   return (
     <div className="block">
-      <div className="mb-1.5 flex items-center gap-2">
+      <div className="mb-1.5 flex flex-wrap items-center gap-2">
         <span className="text-[13px] font-medium text-slate-700">{label}</span>
-        <button
-          type="button"
-          onClick={() => onChange({ from: localIso(-1), to: localIso(0) })}
-          className="rounded-md border border-brand/30 bg-white px-2 py-0.5 text-xs font-semibold text-brand hover:bg-brand-muted/40"
-          title="Set From to yesterday and to to today"
-        >
-          Today
-        </button>
+        {buttons.map((p) => {
+          const pFrom = localIso(p.fromDays);
+          const pTo = localIso(p.toDays);
+          const selected = from === pFrom && to === pTo;
+          return (
+            <button
+              key={p.id}
+              type="button"
+              onClick={() => onChange({ from: pFrom, to: pTo })}
+              aria-pressed={selected}
+              className={cx(
+                'rounded-md border px-2 py-0.5 text-xs font-semibold transition-colors',
+                selected
+                  ? 'border-brand bg-brand text-white'
+                  : 'border-brand/30 bg-white text-brand hover:bg-brand-muted/40',
+              )}
+            >
+              {p.label}
+            </button>
+          );
+        })}
       </div>
       {range}
     </div>

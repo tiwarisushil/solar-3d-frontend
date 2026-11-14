@@ -961,7 +961,7 @@ export function timeAgo(d) {
 
 export { default as RichTextEditor } from './RichTextEditor';
 export { default as RichTextContent } from './RichTextContent';
-export { DateRangeFilter } from './DateRangeFilter';
+export { DateRangeFilter, DATE_PRESETS } from './DateRangeFilter';
 export { PdfViewerHost, closePdfViewer, openPdfViewer, openPdfViewerLoading } from './PdfViewer';
 export { UploadProgress, useUploadQueue } from './UploadProgress';
 export { MultiSelect } from './MultiSelect';

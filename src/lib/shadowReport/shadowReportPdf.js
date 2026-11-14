@@ -176,7 +176,7 @@ function cover(doc, r, results, summaries) {
   // footer band
   doc.setFillColor(...SOFT);
   doc.rect(0, H - 12, W, 12, 'F');
-  const contact = [r.company.name, r.company.phone, r.company.email, r.company.website].filter(Boolean).join('   |   ');
+  const contact = [r.company.name, r.company.phone, r.company.alternatePhone, r.company.email, r.company.website].filter(Boolean).join('   |   ');
   text(doc, clip(doc, contact ? `Prepared by ${contact}` : 'Shadow analysis', CW - 50, 7.5), M, H - 5, { size: 7.5, color: MUTED });
   text(doc, `${meta.renderWidth} × ${meta.renderHeight} px renders`, W - M, H - 5, { size: 7.5, color: MUTED, align: 'right' });
 }

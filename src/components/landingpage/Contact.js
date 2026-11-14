@@ -1,7 +1,7 @@
 'use client';
 
 import { Loader2, ShieldCheck } from 'lucide-react';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { api } from '@/lib/api';
 import { cx } from '../kit';
 import Reveal from '../marketing/Reveal';
@@ -16,6 +16,12 @@ export default function Contact() {
   const [done, setDone] = useState(false);
   const [error, setError] = useState('');
   const set = (key) => (e) => setForm((f) => ({ ...f, [key]: e.target.value }));
+
+  useEffect(() => {
+    if (!done) return undefined;
+    const timer = setTimeout(() => setDone(false), 3000);
+    return () => clearTimeout(timer);
+  }, [done]);
 
   const submit = async (e) => {
     e.preventDefault();

@@ -12,8 +12,9 @@ import Link from 'next/link';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '@/lib/api';
 import { COVER_STYLES } from '@/lib/coverStyles';
+import { DEFAULT_PRODUCT_UNITS } from '@/lib/catalog';
 import { CURRENCIES, formatMoney } from '@/lib/energy';
-import { lineAmount, proposalSavings, proposalTotals } from '@/lib/freeProposalCalc';
+import { lineAmount, proposalSavings, proposalTotals, taxLabel } from '@/lib/freeProposalCalc';
 import { RichTextEditor, cx } from '../kit';
 import { LogoMark, LogoText, PRODUCT_NAME } from '../layout/Brand';
 
@@ -30,24 +31,33 @@ const STYLES = `
 `;
 
 let seq = 0;
-const blankItem = () => ({ key: `i${Date.now().toString(36)}${++seq}`, name: '', description: '', qty: '', unit: '', rate: '', taxPercent: '' });
+const blankItem = (kind = 'product') => ({
+  key: `i${Date.now().toString(36)}${++seq}`,
+  kind: kind === 'service' ? 'service' : 'product',
+  name: '',
+  description: '',
+  qty: kind === 'service' ? '1' : '',
+  unit: kind === 'service' ? '' : 'Nos',
+  rate: '',
+});
+const TAX_TYPES = ['None', 'GST', 'VAT', 'Sales tax', 'Service tax', 'SST', 'HST', 'Other'];
 const blank = () => ({
   company: { name: '', contactName: '', phone: '', email: '', website: '', address: '', taxId: '' },
   client: { name: '', phone: '', email: '', address: '' },
   system: { title: '', type: '', kw: '', panelCount: '', panelBrand: '', panelWatts: '', inverter: '', structure: '', warranty: '', annualKwh: '', tariff: '' },
-  items: [blankItem()],
-  pricing: { currency: 'INR', discount: '', discountIsPercent: true, discountRemark: '', subsidy: '' },
+  items: [blankItem('product')],
+  pricing: { currency: 'INR', discount: '', discountIsPercent: true, discountRemark: '', taxType: 'None', taxPercent: '', subsidy: '' },
   terms: { validUntil: '', payment: '', conditions: '', notes: '' },
   design: { cover: '', primary: '#1D4ED8', accent: '#F5B82E' },
 });
 
 const STEPS = [
-  { id: 'company', label: 'Your company', icon: Building2, title: 'Tell us about your company', sub: 'It goes on every page of the proposal: the cover, the header and the footer.' },
+  { id: 'company', label: 'Your company', icon: Building2, title: 'Tell us about your company', sub: 'It goes on every page of the proposal: the cover, the header and the footer. Pick the currency used for all prices.' },
   { id: 'client', label: 'Your client', icon: UserRound, title: 'Who is the proposal for?', sub: 'The client’s name and site are printed on the cover and in the letter.' },
   { id: 'system', label: 'Solar system', icon: Sun, title: 'The solar system you are proposing', sub: 'These figures make the key numbers on the cover and the summary page.' },
-  { id: 'price', label: 'Items & price', icon: ReceiptText, title: 'What it includes, and the price', sub: 'Enter each item with its quantity and rate. The amounts and totals are worked out for you.' },
+  { id: 'price', label: 'Items & price', icon: ReceiptText, title: 'What it includes, and the price', sub: 'Add products and services with quantity and rate, then pick the tax type and percent. The amounts and totals are worked out for you.' },
   { id: 'terms', label: 'Terms', icon: ScrollText, title: 'Validity and terms', sub: 'How long the offer stands, how it is paid and your conditions.' },
-  { id: 'design', label: 'Design', icon: Palette, title: 'Choose the design', sub: 'Pick a cover and your colours. The preview is the real document.' },
+  { id: 'design', label: 'Template', icon: Palette, title: 'Choose the design', sub: 'Pick a cover and your colours. The preview is the real document.' },
 ];
 const SYSTEM_TYPES = ['On-grid', 'Off-grid', 'Hybrid'];
 const COLOURS = ['#1D4ED8', '#0F6E56', '#B91C1C', '#C2410C', '#7C3AED', '#0E7490', '#111827'];
@@ -126,12 +136,12 @@ const readDraft = () => {
 function missing(step, f) {
   if (step === 0) return f.company.name.trim().length < 2 ? 'Enter your company name' : f.company.contactName.trim().length < 2 ? 'Enter your name' : f.company.phone.replace(/\D/g, '').length < 7 ? 'Enter your mobile number' : '';
   if (step === 1) return f.client.name.trim().length < 2 ? 'Enter your client’s name' : '';
-  if (step === 2) return !f.system.type ? 'Choose the type of system' : !(Number(f.system.kw) > 0) ? 'Enter the size of the system in kW' : !(Number(f.system.annualKwh) > 0) ? 'Enter the energy the system makes in a year' : !(Number(f.system.tariff) > 0) ? 'Enter the price of a unit of electricity' : '';
+  if (step === 2) return !f.system.type ? 'Choose the type of system' : !(Number(f.system.kw) > 0) ? 'Enter the size of the system in kW' : '';
   if (step === 3) {
     const rows = f.items.filter((it) => it.name.trim());
-    if (!rows.length) return 'Add at least one item with its quantity and rate';
-    const bad = rows.find((it) => !(Number(it.qty) > 0) || it.rate === '');
-    return bad ? `Enter the quantity and rate of ${bad.name.trim()}` : '';
+    if (!rows.length) return 'Add at least one product or service with its quantity and rate';
+    const bad = rows.find((it) => it.kind === 'service' ? it.rate === '' : !(Number(it.qty) > 0) || it.rate === '');
+    return bad ? (bad.kind === 'service' ? `Enter the amount for ${bad.name.trim()}` : `Enter the quantity and rate of ${bad.name.trim()}`) : '';
   }
   if (step === 5) return !f.design.cover ? 'Choose a cover design' : '';
   return '';
@@ -165,7 +175,20 @@ function CompanyStep({ f, set, logo, setLogo, position, setPosition, setError })
   };
   return (
     <div className="grid gap-5 sm:grid-cols-2">
-      <Field label="Company name" className="sm:col-span-2"><Text value={c.name} onChange={(v) => up({ name: v })} maxLength={160} autoComplete="organization" placeholder="The name your clients know you by" /></Field>
+      <div className="grid gap-5 sm:col-span-2 sm:grid-cols-[minmax(0,1fr)_7.5rem]">
+        <Field label="Company name"><Text value={c.name} onChange={(v) => up({ name: v })} maxLength={160} autoComplete="organization" placeholder="The name your clients know you by" /></Field>
+        <Field label="Currency">
+          <select
+            aria-label="Currency"
+            value={f.pricing?.currency || 'INR'}
+            onChange={(e) => set({ pricing: { ...f.pricing, currency: e.target.value } })}
+            className={cx(FIELD, 'px-2')}
+            title="Used for every price on the form, the sidebar and the proposal PDF."
+          >
+            {Object.values(CURRENCIES).map((cur) => <option key={cur.code} value={cur.code}>{cur.code}</option>)}
+          </select>
+        </Field>
+      </div>
       <Field label="Your name"><Text value={c.contactName} onChange={(v) => up({ contactName: v })} maxLength={120} autoComplete="name" placeholder="Who signs the proposal" /></Field>
       <Field label="Mobile number"><Text value={c.phone} onChange={(v) => up({ phone: v.replace(/[^\d+ -]/g, '') })} type="tel" inputMode="tel" maxLength={20} autoComplete="tel" placeholder="Printed on the proposal" /></Field>
       <Field label="Email" optional><Text value={c.email} onChange={(v) => up({ email: v })} type="email" maxLength={160} autoComplete="email" placeholder="name@company.com" /></Field>
@@ -225,9 +248,74 @@ function SystemStep({ f, set, money }) {
       <Field label="Inverter" optional className="sm:col-span-3"><Text value={s.inverter} onChange={(v) => up({ inverter: v })} maxLength={160} placeholder="Brand, model and size" /></Field>
       <Field label="Mounting structure" optional className="sm:col-span-3"><Text value={s.structure} onChange={(v) => up({ structure: v })} maxLength={160} placeholder="e.g. Hot-dip galvanised, elevated" /></Field>
       <Field label="Warranty" optional className="sm:col-span-3"><Text value={s.warranty} onChange={(v) => up({ warranty: v })} maxLength={200} placeholder="e.g. Panels 25 years, inverter 10 years" /></Field>
-      <Field label="Energy made in a year (kWh)" className="sm:col-span-3" hint="Your own estimate for this site."><Num value={s.annualKwh} onChange={(v) => up({ annualKwh: v })} placeholder="e.g. 7000" /></Field>
-      <Field label="Price of a unit of electricity" className="sm:col-span-3" hint="What the client pays the grid for one kWh."><Num value={s.tariff} onChange={(v) => up({ tariff: v })} placeholder="e.g. 8" /></Field>
+      <Field label="Energy made in a year (kWh)" optional className="sm:col-span-3" hint="Your own estimate for this site. Used for savings on the cover when both figures are given."><Num value={s.annualKwh} onChange={(v) => up({ annualKwh: v })} placeholder="e.g. 7000" /></Field>
+      <Field label="Price of a unit of electricity" optional className="sm:col-span-3" hint="What the client pays the grid for one kWh."><Num value={s.tariff} onChange={(v) => up({ tariff: v })} placeholder="e.g. 8" /></Field>
       {yearly > 0 && <p className="fp-row rounded-xl bg-brand-soft px-4 py-3 text-[14.5px] text-brand-ink sm:col-span-6">That is a saving of about <b>{money(yearly)}</b> a year for your client. It is printed as “Year-1 savings”.</p>}
+    </div>
+  );
+}
+
+function LineTable({ kind, items, indices, money, setItem, remove, add, emptyHint }) {
+  const isService = kind === 'service';
+  const label = isService ? 'Service' : 'Product';
+  return (
+    <div className="overflow-x-auto rounded-2xl border border-slate-200">
+      <div className="flex items-center justify-between gap-3 border-b border-slate-200 bg-slate-50 px-3 py-2.5">
+        <h3 className="text-[13px] font-semibold tracking-wide text-slate-600 uppercase">{isService ? 'Services' : 'Products'}</h3>
+        <button type="button" onClick={add} className="inline-flex h-9 items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3 text-[14px] font-semibold text-slate-700 hover:border-brand hover:text-brand-ink"><Plus className="h-4 w-4" /> Add a {isService ? 'service' : 'product'}</button>
+      </div>
+      {!indices.length ? (
+        <p className="px-4 py-6 text-[14px] text-slate-500">{emptyHint}</p>
+      ) : (
+        <table className={cx('w-full border-collapse text-left', !isService && 'min-w-[640px]')}>
+          <thead>
+            <tr className="bg-white text-[12.5px] font-semibold tracking-wide text-slate-500 uppercase">
+              <th className="px-3 py-2.5">{label}</th>
+              {!isService && <><th className="w-24 px-2 py-2.5">Qty</th><th className="w-28 px-2 py-2.5">Unit</th></>}
+              <th className="w-36 px-2 py-2.5">{isService ? 'Amount' : 'Rate'}</th>
+              {!isService && <th className="w-36 px-3 py-2.5 text-right">Amount</th>}
+              <th className="w-10" />
+            </tr>
+          </thead>
+          <tbody>
+            {indices.map((i, n) => {
+              const it = items[i];
+              return (
+                <tr key={it.key} className="fp-row border-t border-slate-200 align-top">
+                  <td className="px-3 py-2.5">
+                    <input className={CELL} value={it.name} maxLength={160} onChange={(e) => setItem(i, { name: e.target.value })} placeholder={isService ? 'e.g. Installation labour' : 'e.g. Solar panels'} aria-label={`${label} ${n + 1}`} />
+                    {!isService && (
+                      <input className={cx(CELL, 'mt-1.5 h-9 border-transparent bg-slate-50 text-[13.5px]')} value={it.description} maxLength={400} onChange={(e) => setItem(i, { description: e.target.value })} placeholder="Description: brand, model, size…" aria-label={`Description of product ${n + 1}`} />
+                    )}
+                  </td>
+                  {!isService && (
+                    <>
+                      <td className="px-2 py-2.5"><Num className={CELL} value={it.qty} onChange={(v) => setItem(i, { qty: v })} aria-label="Quantity" placeholder="0" /></td>
+                      <td className="px-2 py-2.5">
+                        <select aria-label="Unit" value={it.unit || 'Nos'} onChange={(e) => setItem(i, { unit: e.target.value })} className={CELL}>
+                          {DEFAULT_PRODUCT_UNITS.map((u) => <option key={u} value={u}>{u}</option>)}
+                          {it.unit && !DEFAULT_PRODUCT_UNITS.includes(it.unit) && <option value={it.unit}>{it.unit}</option>}
+                        </select>
+                      </td>
+                    </>
+                  )}
+                  <td className="px-2 py-2.5">
+                    <Num
+                      className={CELL}
+                      value={it.rate}
+                      onChange={(v) => setItem(i, isService ? { rate: v, qty: '1', unit: '', description: '' } : { rate: v })}
+                      aria-label={isService ? 'Amount' : 'Rate'}
+                      placeholder="0"
+                    />
+                  </td>
+                  {!isService && <td className="px-3 py-2.5 text-right"><div className="h-10 text-[15px] leading-10 font-semibold text-slate-900 tabular-nums">{money(lineAmount(it))}</div></td>}
+                  <td className="py-2.5 pr-2"><button type="button" aria-label={`Remove ${label.toLowerCase()} ${n + 1}`} onClick={() => remove(i)} className="mt-1 grid h-8 w-8 place-items-center rounded-md text-slate-400 hover:bg-red-50 hover:text-red-600"><Trash2 className="h-4 w-4" /></button></td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      )}
     </div>
   );
 }
@@ -236,68 +324,82 @@ function PriceStep({ f, set, totals, money }) {
   const p = f.pricing;
   const upP = (patch) => set({ pricing: { ...p, ...patch } });
   const setItem = (i, patch) => set({ items: f.items.map((it, j) => (j === i ? { ...it, ...patch } : it)) });
-  const remove = (i) => set({ items: f.items.length <= 1 ? [blankItem()] : f.items.filter((_, j) => j !== i) });
-  const add = () => set({ items: [...f.items, blankItem()] });
+  const remove = (i) => {
+    const next = f.items.filter((_, j) => j !== i);
+    set({ items: next.length ? next : [blankItem('product')] });
+  };
+  const add = (kind) => set({ items: [...f.items, blankItem(kind)] });
+  const productIdx = f.items.map((it, i) => (it.kind !== 'service' ? i : -1)).filter((i) => i >= 0);
+  const serviceIdx = f.items.map((it, i) => (it.kind === 'service' ? i : -1)).filter((i) => i >= 0);
   return (
     <div className="space-y-6">
       <div className="flex flex-wrap items-end justify-between gap-3">
-        <p className="max-w-[52ch] text-[14px] text-slate-600">One line for each thing in the price: panels, inverter, structure, cables, installation, net-metering work and so on.</p>
-        <label className="flex items-center gap-2 text-[14px] font-medium text-slate-700">Currency
-          <select value={p.currency} onChange={(e) => upP({ currency: e.target.value })} className="h-10 rounded-lg border border-slate-300 bg-white px-2.5 text-[14.5px] outline-none focus:border-brand">
-            {Object.values(CURRENCIES).map((c) => <option key={c.code} value={c.code}>{c.code} ({c.symbol.trim()})</option>)}
-          </select>
-        </label>
+        <p className="max-w-[52ch] text-[14px] text-slate-600">List products (panels, inverter, structure, cables) and services (installation, net-metering, AMC) as separate lines.</p>
+        <p className="text-[14px] font-medium text-slate-700">Currency: <span className="tabular-nums text-slate-950">{p.currency || 'INR'} ({(CURRENCIES[p.currency] || CURRENCIES.INR).symbol.trim()})</span></p>
       </div>
 
-      <div className="overflow-x-auto rounded-2xl border border-slate-200">
-        <table className="w-full min-w-[720px] border-collapse text-left">
-          <thead>
-            <tr className="bg-slate-50 text-[12.5px] font-semibold tracking-wide text-slate-500 uppercase">
-              <th className="px-3 py-2.5">Item</th><th className="w-24 px-2 py-2.5">Qty</th><th className="w-24 px-2 py-2.5">Unit</th><th className="w-32 px-2 py-2.5">Rate</th><th className="w-24 px-2 py-2.5">Tax %</th><th className="w-36 px-3 py-2.5 text-right">Amount</th><th className="w-10" />
-            </tr>
-          </thead>
-          <tbody>
-            {f.items.map((it, i) => (
-              <tr key={it.key} className="fp-row border-t border-slate-200 align-top">
-                <td className="px-3 py-2.5">
-                  <input className={CELL} value={it.name} maxLength={160} onChange={(e) => setItem(i, { name: e.target.value })} placeholder="e.g. Solar panels" aria-label={`Item ${i + 1}`} />
-                  <input className={cx(CELL, 'mt-1.5 h-9 border-transparent bg-slate-50 text-[13.5px]')} value={it.description} maxLength={400} onChange={(e) => setItem(i, { description: e.target.value })} placeholder="Description: brand, model, size…" aria-label={`Description of item ${i + 1}`} />
-                </td>
-                <td className="px-2 py-2.5"><Num className={CELL} value={it.qty} onChange={(v) => setItem(i, { qty: v })} aria-label="Quantity" placeholder="0" /></td>
-                <td className="px-2 py-2.5"><input className={CELL} value={it.unit} maxLength={20} onChange={(e) => setItem(i, { unit: e.target.value })} aria-label="Unit" placeholder="Nos" /></td>
-                <td className="px-2 py-2.5"><Num className={CELL} value={it.rate} onChange={(v) => setItem(i, { rate: v })} aria-label="Rate" placeholder="0" /></td>
-                <td className="px-2 py-2.5"><Num className={CELL} value={it.taxPercent} onChange={(v) => setItem(i, { taxPercent: v })} aria-label="Tax percent" placeholder="0" max={100} /></td>
-                <td className="px-3 py-2.5 text-right"><div className="h-10 text-[15px] leading-10 font-semibold text-slate-900 tabular-nums">{money(lineAmount(it))}</div></td>
-                <td className="py-2.5 pr-2"><button type="button" aria-label={`Remove item ${i + 1}`} onClick={() => remove(i)} className="mt-1 grid h-8 w-8 place-items-center rounded-md text-slate-400 hover:bg-red-50 hover:text-red-600"><Trash2 className="h-4 w-4" /></button></td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-        <div className="border-t border-slate-200 bg-slate-50/60 px-3 py-2.5">
-          <button type="button" onClick={add} className="inline-flex h-9 items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3 text-[14px] font-semibold text-slate-700 hover:border-brand hover:text-brand-ink"><Plus className="h-4 w-4" /> Add an item</button>
-        </div>
-      </div>
+      <LineTable
+        kind="product"
+        items={f.items}
+        indices={productIdx}
+        money={money}
+        setItem={setItem}
+        remove={remove}
+        add={() => add('product')}
+        emptyHint="No products yet. Add panels, inverters, structure and other materials."
+      />
+      <LineTable
+        kind="service"
+        items={f.items}
+        indices={serviceIdx}
+        money={money}
+        setItem={setItem}
+        remove={remove}
+        add={() => add('service')}
+        emptyHint="No services yet. Add installation, commissioning, net-metering or AMC work."
+      />
 
-      <div className="grid gap-6 lg:grid-cols-2">
-        <div className="space-y-5">
+      <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_18rem]">
+        <div className="min-w-0 space-y-5">
           <div>
             <span className="mb-1.5 flex items-baseline justify-between text-[14px] font-medium text-slate-800"><span>Discount</span><span className="text-[12.5px] font-normal text-slate-400">optional</span></span>
-            <div className="flex gap-2">
+            <div className="grid grid-cols-[minmax(0,1fr)_9.5rem] gap-2">
               <Num value={p.discount} onChange={(v) => upP({ discount: v })} placeholder="0" aria-label="Discount" />
-              <div role="radiogroup" aria-label="Discount as" className="flex shrink-0 overflow-hidden rounded-xl border border-slate-300">
-                {[[true, '%'], [false, CURRENCIES[p.currency]?.symbol.trim() || p.currency]].map(([v, t]) => <button key={t} type="button" role="radio" aria-checked={p.discountIsPercent === v} onClick={() => upP({ discountIsPercent: v })} className={cx('w-12 text-[15px] font-semibold', p.discountIsPercent === v ? 'bg-brand text-brand-fg' : 'bg-white text-slate-600 hover:bg-slate-50')}>{t}</button>)}
-              </div>
+              <select aria-label="Discount type" value={p.discountIsPercent ? 'percent' : 'flat'} onChange={(e) => upP({ discountIsPercent: e.target.value === 'percent' })} className={FIELD}>
+                <option value="percent">Percentage</option>
+                <option value="flat">Flat</option>
+              </select>
             </div>
             {Number(p.discount) > 0 && <input className={cx(FIELD, 'fp-row mt-2')} value={p.discountRemark} maxLength={200} onChange={(e) => upP({ discountRemark: e.target.value })} placeholder="Reason, e.g. Festival offer (optional)" />}
+          </div>
+          <div className={cx('grid gap-3', (p.taxType || 'None') !== 'None' && 'sm:grid-cols-[minmax(0,1fr)_7.5rem]')}>
+            <Field label="Tax type">
+              <select
+                aria-label="Tax type"
+                value={p.taxType || 'None'}
+                onChange={(e) => upP({ taxType: e.target.value, ...(e.target.value === 'None' ? { taxPercent: '' } : {}) })}
+                className={FIELD}
+              >
+                {TAX_TYPES.map((t) => <option key={t} value={t}>{t === 'None' ? 'No tax' : t}</option>)}
+              </select>
+            </Field>
+            {(p.taxType || 'None') !== 'None' && (
+              <Field label="Tax %">
+                <Num value={p.taxPercent} onChange={(v) => upP({ taxPercent: v })} placeholder="0" aria-label="Tax percent" max={100} />
+              </Field>
+            )}
+            {(p.taxType || 'None') !== 'None' && (
+              <p className="text-[12.5px] leading-snug text-slate-500 sm:col-span-2">Applied on the amount after discount. Printed as {taxLabel({ ...p, taxPercent: p.taxPercent || 0 })}.</p>
+            )}
           </div>
           <Field label="Government subsidy" optional hint="Shown under the total as “Net payable after subsidy”."><Num value={p.subsidy} onChange={(v) => upP({ subsidy: v })} placeholder="0" /></Field>
         </div>
         <dl className="self-start rounded-2xl border border-slate-200 bg-slate-50 p-5 text-[15px]">
-          <div className="flex justify-between py-1.5"><dt className="text-slate-600">Subtotal</dt><dd className="font-medium tabular-nums">{money(totals.subtotal)}</dd></div>
-          {totals.discountAmount > 0 && <div className="flex justify-between py-1.5"><dt className="text-slate-600">Discount</dt><dd className="font-medium text-emerald-700 tabular-nums">− {money(totals.discountAmount)}</dd></div>}
-          {totals.tax > 0 && <div className="flex justify-between py-1.5"><dt className="text-slate-600">Tax</dt><dd className="font-medium tabular-nums">{money(totals.tax)}</dd></div>}
-          <div className="mt-2 flex items-baseline justify-between border-t border-slate-300 pt-3"><dt className="font-semibold text-slate-900">Total</dt><dd className="text-[1.5rem] font-semibold tracking-tight text-slate-950 tabular-nums">{money(totals.total)}</dd></div>
-          {totals.subsidy > 0 && <div className="mt-1 flex justify-between text-[14.5px]"><dt className="text-slate-600">After subsidy</dt><dd className="font-semibold text-brand-ink tabular-nums">{money(totals.net)}</dd></div>}
+          <div className="flex justify-between gap-4 py-1.5"><dt className="text-slate-600">Subtotal</dt><dd className="font-medium tabular-nums">{money(totals.subtotal)}</dd></div>
+          {totals.discountAmount > 0 && <div className="flex justify-between gap-4 py-1.5"><dt className="text-slate-600">Discount</dt><dd className="font-medium text-emerald-700 tabular-nums">− {money(totals.discountAmount)}</dd></div>}
+          {totals.tax > 0 && <div className="flex justify-between gap-4 py-1.5"><dt className="min-w-0 text-slate-600">{taxLabel(p)}</dt><dd className="shrink-0 font-medium tabular-nums">{money(totals.tax)}</dd></div>}
+          <div className="mt-2 flex items-baseline justify-between gap-4 border-t border-slate-300 pt-3"><dt className="font-semibold text-slate-900">Total</dt><dd className="text-[1.5rem] font-semibold tracking-tight text-slate-950 tabular-nums">{money(totals.total)}</dd></div>
+          {totals.subsidy > 0 && <div className="mt-1 flex justify-between gap-4 text-[14.5px]"><dt className="text-slate-600">After subsidy</dt><dd className="font-semibold text-brand-ink tabular-nums">{money(totals.net)}</dd></div>}
         </dl>
       </div>
     </div>
@@ -460,7 +562,9 @@ export default function FreeProposal() {
     company: f.company,
     client: f.client,
     system: f.system,
-    items: f.items.filter((it) => it.name.trim()).map(({ key, ...it }) => it),
+    items: f.items.filter((it) => it.name.trim()).map(({ key, ...it }) => (
+      it.kind === 'service' ? { ...it, qty: 1, unit: '', description: '' } : it
+    )),
     pricing: f.pricing,
     terms: f.terms,
     design: f.design,

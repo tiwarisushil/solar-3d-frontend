@@ -18,6 +18,17 @@ export const PDF_PAGES = [
   { id: 'shadow', name: 'Shadow analysis', hint: 'Hour-by-hour shading (takes a minute)', needs3d: true },
 ];
 
+/** Pages offered when downloading a proposal without a 3D design (no roof/layout/shadow sheets). */
+export const QUOTE_PDF_PAGES = [
+  { id: 'cover', name: 'Front page', hint: 'Cover with brand artwork' },
+  { id: 'summary', name: 'Proposal summary', hint: 'Letter, key figures, system at a glance' },
+  { id: 'electrical', name: 'System & electrical', hint: 'Modules, inverter and string table' },
+  { id: 'sld', name: 'Single line diagram', hint: 'Whole system wiring' },
+  { id: 'energy', name: 'Energy & financials', hint: 'Monthly energy, payback chart' },
+  { id: 'monthly', name: 'Monthly outlook', hint: 'Month-by-month savings table' },
+  { id: 'price', name: 'Price & acceptance', hint: 'Price summary, total, sign-off' },
+];
+
 export const ALL_PAGES = PDF_PAGES.map((p) => p.id);
 const DEFAULT_PAGES = ALL_PAGES.filter((id) => id !== 'shadow');
 const KEY = 'innovbit.pdfPages';

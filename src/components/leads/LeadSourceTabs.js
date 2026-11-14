@@ -1,7 +1,7 @@
 'use client';
 
 // All · Meta · Google Ads · Manual on the right of the breadcrumb line, with each source's count. The sidebar has a
-// single "Leads" entry; this control does what its sub-items used to, and keeps the view (list or pipeline) you are in.
+// single "Leads" entry; this control does what its sub-items used to, and keeps the view (list, pipeline or activity) you are in.
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useCounts } from '@/lib/counts';
@@ -20,13 +20,13 @@ export default function LeadSourceTabs() {
   const pathname = usePathname();
   const { base, source } = leadPaths(pathname);
   const counts = useCounts((s) => s.counts);
-  const onBoard = pathname.endsWith('/board');
+  const viewSuffix = pathname.endsWith('/board') ? '/board' : pathname.endsWith('/activity') ? '/activity' : '';
   return (
     <BreadcrumbActions>
       <div role="tablist" aria-label="Lead source" className="inline-flex max-w-full overflow-x-auto rounded-lg border border-slate-200 bg-white p-0.5 text-[13px]">
         {SOURCES.map((s) => {
           const active = s.id === source;
-          const href = `${base}${s.id ? `/${s.id}` : ''}${onBoard ? '/board' : ''}`;
+          const href = `${base}${s.id ? `/${s.id}` : ''}${viewSuffix}`;
           const n = counts?.[s.countKey];
           return (
             <Link

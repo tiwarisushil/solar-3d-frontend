@@ -10,9 +10,23 @@ const n = (v, max = 1e12) => {
 /** One line: quantity × rate. */
 export const lineAmount = (it) => round2(n(it?.qty) * n(it?.rate));
 
+/** True when the proposal uses a named tax (GST, VAT, …) instead of “no tax”. */
+export function hasTaxType(pricing = {}) {
+  const type = String(pricing.taxType || '').trim();
+  return Boolean(type) && type.toLowerCase() !== 'none';
+}
+
+/** Label for totals / PDF, e.g. “GST (18%)” or “Tax”. */
+export function taxLabel(pricing = {}) {
+  if (!hasTaxType(pricing)) return 'Tax';
+  const type = String(pricing.taxType).trim();
+  const pct = n(pricing.taxPercent, 100);
+  return pct > 0 ? `${type} (${pct}%)` : type;
+}
+
 /**
- * The money of a proposal: the lines add up to the subtotal; the discount comes off every line in proportion; each
- * line's own tax is added; the subsidy (if any) is shown under the total.
+ * The money of a proposal: the lines add up to the subtotal; the discount comes off; then tax is applied from the
+ * proposal’s tax type + percent (legacy drafts without a tax type still use each line’s own tax %).
  */
 export function proposalTotals(items = [], pricing = {}) {
   const lines = items.map((it) => ({ amount: lineAmount(it), taxPercent: n(it.taxPercent, 100) }));
@@ -20,7 +34,9 @@ export function proposalTotals(items = [], pricing = {}) {
   const discountAmount = round2(Math.min(subtotal, pricing.discountIsPercent ? (subtotal * n(pricing.discount, 100)) / 100 : n(pricing.discount)));
   const keep = subtotal > 0 ? 1 - discountAmount / subtotal : 1;
   const taxable = round2(subtotal - discountAmount);
-  const tax = round2(lines.reduce((a, l) => a + (l.amount * keep * l.taxPercent) / 100, 0));
+  const tax = hasTaxType(pricing)
+    ? round2((taxable * n(pricing.taxPercent, 100)) / 100)
+    : round2(lines.reduce((a, l) => a + (l.amount * keep * l.taxPercent) / 100, 0));
   const total = round2(taxable + tax);
   const subsidy = round2(Math.min(total, n(pricing.subsidy)));
   return { subtotal, discountAmount, taxable, tax, total, subsidy, net: round2(total - subsidy) };

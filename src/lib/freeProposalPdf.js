@@ -7,7 +7,7 @@
 import { jsPDF } from 'jspdf';
 import { autoTable } from 'jspdf-autotable';
 import { formatMoney, formatNumber } from './energy.js';
-import { lineAmount, proposalSavings, proposalTotals } from './freeProposalCalc.js';
+import { lineAmount, proposalSavings, proposalTotals, taxLabel } from './freeProposalCalc.js';
 import { pdfKit, pdfPage } from './pdf.js';
 import { drawCoverStyle } from './pdfCoverVariants.js';
 import { drawRichText, richTextIsEmpty } from './pdfRichText.js';
@@ -129,21 +129,36 @@ export async function buildFreeProposalPdf({ data, logo = '', refNo = '', save =
   // 3 — price & acceptance
   y = newPage(doc, r, 'Price & acceptance');
   y = section(doc, r, `Price summary (${currency})`, y);
-  const anyTax = items.some((it) => Number(it.taxPercent) > 0);
-  autoTable(doc, {
-    ...table(),
-    startY: y,
-    head: [['Item', 'Description', 'Qty', 'Rate', ...(anyTax ? ['Tax'] : []), 'Amount']],
-    body: items.map((it) => [it.name, it.description || '', `${plain(it.qty)} ${it.unit || ''}`.trim(), money(it.rate), ...(anyTax ? [Number(it.taxPercent) > 0 ? `${plain(it.taxPercent)}%` : '-'] : []), money(lineAmount(it))]),
-    ...numeric(...(anyTax ? [2, 3, 4, 5] : [2, 3, 4])),
-    columnStyles: { 0: { cellWidth: 42, fontStyle: 'bold', textColor: INK }, 2: { halign: 'right', cellWidth: 22 }, 3: { halign: 'right', cellWidth: 26 }, ...(anyTax ? { 4: { halign: 'right', cellWidth: 18 }, 5: { halign: 'right', cellWidth: 28 } } : { 4: { halign: 'right', cellWidth: 28 } }) },
-  });
-  y = doc.lastAutoTable.finalY + 3;
+  const products = items.filter((it) => it.kind !== 'service');
+  const services = items.filter((it) => it.kind === 'service');
+  const drawGroup = (title, head, body, cols) => {
+    if (!body.length) return;
+    y = ensure(doc, r, y, 28);
+    if (title) {
+      text(doc, title, M, y, { size: 9, style: 'bold', color: INK });
+      y += 4;
+    }
+    autoTable(doc, { ...table(), startY: y, head: [head], body, ...cols });
+    y = doc.lastAutoTable.finalY + 5;
+  };
+  const both = products.length && services.length;
+  drawGroup(
+    both ? 'Products' : '',
+    ['Product', 'Description', 'Qty', 'Rate', 'Amount'],
+    products.map((it) => [it.name, it.description || '', `${plain(it.qty)} ${it.unit || ''}`.trim(), money(it.rate), money(lineAmount(it))]),
+    { ...numeric(2, 3, 4), columnStyles: { 0: { cellWidth: 42, fontStyle: 'bold', textColor: INK }, 2: { halign: 'right', cellWidth: 22 }, 3: { halign: 'right', cellWidth: 26 }, 4: { halign: 'right', cellWidth: 28 } } },
+  );
+  drawGroup(
+    both ? 'Services' : '',
+    ['Service', 'Amount'],
+    services.map((it) => [it.name, money(lineAmount({ ...it, qty: 1 }))]),
+    { ...numeric(1), columnStyles: { 0: { cellWidth: CW - 42, fontStyle: 'bold', textColor: INK }, 1: { halign: 'right', cellWidth: 42 } } },
+  );
 
   const lines = [];
   if (totals.discountAmount > 0 || totals.tax > 0) lines.push(['Subtotal', money(totals.subtotal)]);
   if (totals.discountAmount > 0) lines.push([`Discount${pricing.discountRemark ? ` - ${pricing.discountRemark}` : ''}`, money(-totals.discountAmount)]);
-  if (totals.tax > 0) lines.push(['Tax', money(totals.tax)]);
+  if (totals.tax > 0) lines.push([taxLabel(pricing), money(totals.tax)]);
   if (lines.length) {
     autoTable(doc, { ...table(), startY: y, body: lines, theme: 'plain', styles: { fontSize: 9.5, textColor: BODY }, columnStyles: { 0: { cellWidth: CW - 42 }, 1: { halign: 'right', cellWidth: 42 } } });
     y = doc.lastAutoTable.finalY + 3;
@@ -151,7 +166,11 @@ export async function buildFreeProposalPdf({ data, logo = '', refNo = '', save =
   y = ensure(doc, r, y, 26);
   doc.setFillColor(...brand.primary);
   doc.rect(M, y, CW, 13, 'F');
-  text(doc, totals.tax > 0 ? 'GRAND TOTAL (INCL. TAX)' : 'TOTAL INVESTMENT', M + 4, y + 8.2, { size: 8.5, style: 'bold', color: brand.primaryFg });
+  const taxName = String(pricing.taxType || '').trim();
+  const totalCaption = totals.tax > 0
+    ? `GRAND TOTAL (INCL. ${taxName && taxName.toLowerCase() !== 'none' ? taxName.toUpperCase() : 'TAX'})`
+    : 'TOTAL INVESTMENT';
+  text(doc, totalCaption, M + 4, y + 8.2, { size: 8.5, style: 'bold', color: brand.primaryFg });
   text(doc, `${kwp} kW system`, M + 68, y + 8.2, { size: 8.5, color: brand.primaryFg });
   text(doc, money(totals.total), W - M - 4, y + 8.8, { size: 13, style: 'bold', color: brand.primaryFg, align: 'right' });
   y += 13;

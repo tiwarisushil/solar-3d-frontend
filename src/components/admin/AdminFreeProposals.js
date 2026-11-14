@@ -7,7 +7,7 @@ import { Download, Eye, FileText, Mail, MapPin, Monitor, Phone, Smartphone, Tabl
 import { useEffect, useState } from 'react';
 import { api } from '@/lib/api';
 import { formatMoney } from '@/lib/energy';
-import { lineAmount } from '@/lib/freeProposalCalc';
+import { lineAmount, taxLabel } from '@/lib/freeProposalCalc';
 import { useResource } from '@/lib/useResource';
 import { Alert, Badge, Button, Card, ConfirmDialog, EmptyState, IconButton, LoadingBlock, Modal, PageHeader, RichTextContent, Select, Table, Td, Textarea, Th, Tr, formatDate, timeAgo, toast } from '../kit';
 
@@ -106,17 +106,17 @@ function Details({ id, onClose, onSaved }) {
           <Block title="Price" className="md:col-span-2">
             <div className="overflow-hidden rounded-lg border border-slate-200">
               <table className="w-full text-left text-sm">
-                <thead className="bg-slate-50 text-xs font-semibold text-slate-500 uppercase"><tr><th className="px-3 py-2">Item</th><th className="px-3 py-2 text-right">Qty</th><th className="px-3 py-2 text-right">Rate</th><th className="px-3 py-2 text-right">Tax</th><th className="px-3 py-2 text-right">Amount</th></tr></thead>
+                <thead className="bg-slate-50 text-xs font-semibold text-slate-500 uppercase"><tr><th className="px-3 py-2">Item</th><th className="px-3 py-2">Type</th><th className="px-3 py-2 text-right">Qty</th><th className="px-3 py-2 text-right">Rate</th><th className="px-3 py-2 text-right">Amount</th></tr></thead>
                 <tbody>
                   {(d.items || []).map((it, i) => (
-                    <tr key={i} className="border-t border-slate-100"><td className="px-3 py-2"><div className="font-medium text-slate-900">{it.name}</div>{it.description && <div className="text-xs text-slate-500">{it.description}</div>}</td><td className="px-3 py-2 text-right tabular-nums">{it.qty} {it.unit}</td><td className="px-3 py-2 text-right tabular-nums">{money(it.rate)}</td><td className="px-3 py-2 text-right tabular-nums">{it.taxPercent ? `${it.taxPercent}%` : '—'}</td><td className="px-3 py-2 text-right font-medium tabular-nums">{money(lineAmount(it))}</td></tr>
+                    <tr key={i} className="border-t border-slate-100"><td className="px-3 py-2"><div className="font-medium text-slate-900">{it.name}</div>{it.description && <div className="text-xs text-slate-500">{it.description}</div>}</td><td className="px-3 py-2 text-slate-600">{it.kind === 'service' ? 'Service' : 'Product'}</td><td className="px-3 py-2 text-right tabular-nums">{it.qty} {it.unit}</td><td className="px-3 py-2 text-right tabular-nums">{money(it.rate)}</td><td className="px-3 py-2 text-right font-medium tabular-nums">{money(lineAmount(it))}</td></tr>
                   ))}
                 </tbody>
               </table>
             </div>
             <dl className="mt-2 ml-auto max-w-xs divide-y divide-slate-100">
               {t.discountAmount > 0 && <Row label="Discount">− {money(t.discountAmount)}</Row>}
-              {t.tax > 0 && <Row label="Tax">{money(t.tax)}</Row>}
+              {t.tax > 0 && <Row label={taxLabel(d.pricing)}>{money(t.tax)}</Row>}
               <Row label="Total"><span className="text-base">{money(t.total)}</span></Row>
               {t.subsidy > 0 && <Row label="After subsidy">{money(t.net)}</Row>}
             </dl>

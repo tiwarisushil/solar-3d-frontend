@@ -18,6 +18,7 @@ export default function LeadListFilterBar({
   toDate = '',
   onDateChange,
   dateLabel = 'Received',
+  datePresets,
   children,
   className,
 }) {
@@ -59,7 +60,13 @@ export default function LeadListFilterBar({
             {(onDateChange || showClear) && (
               <div className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-200 pt-4">
                 {onDateChange && (
-                  <DateRangeFilter label={dateLabel} from={fromDate} to={toDate} onChange={onDateChange} />
+                  <DateRangeFilter
+                    label={dateLabel}
+                    from={fromDate}
+                    to={toDate}
+                    onChange={onDateChange}
+                    presets={datePresets}
+                  />
                 )}
                 {showClear && onClear && (
                   <Button type="button" variant="ghost" size="sm" icon={X} onClick={onClear} className="shrink-0">

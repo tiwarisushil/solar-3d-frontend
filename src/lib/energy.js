@@ -54,7 +54,7 @@ export function buildYieldModel(lat, solarData) {
 export const CURRENCIES = {
   INR: { code: 'INR', symbol: '₹', locale: 'en-IN', tariff: 8, costPerKw: 55000 },
   USD: { code: 'USD', symbol: '$', locale: 'en-US', tariff: 0.17, costPerKw: 2800 },
-  EUR: { code: 'EUR', symbol: '€', locale: 'de-DE', tariff: 0.3, costPerKw: 1500 },
+  EUR: { code: 'EUR', symbol: '€', locale: 'en-IE', tariff: 0.3, costPerKw: 1500 },
   GBP: { code: 'GBP', symbol: '£', locale: 'en-GB', tariff: 0.25, costPerKw: 1600 },
   AUD: { code: 'AUD', symbol: 'A$', locale: 'en-AU', tariff: 0.3, costPerKw: 1100 },
   AED: { code: 'AED', symbol: 'AED ', locale: 'en-AE', tariff: 0.38, costPerKw: 3500 },

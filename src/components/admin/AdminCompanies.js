@@ -13,7 +13,7 @@ import { Alert, Badge, Button, Card, ConfirmDialog, EmptyState, FormField, FormM
 const PAGE_SIZE = 10;
 import { PlanBadge, StatusBadge } from './shared';
 
-const BLANK = { hasBranches: false, branchName: '', branchOwnerName: '', branchOwnerEmail: '', branchOwnerPassword: '', name: '', contactName: '', loginEmail: '', password: '', phone: '', address: '', website: '', taxId: '', pan: '', planId: '', status: 'active', notes: '', limits: { maxConcurrentLogins: 2, maxBranches: 3, maxClients: 100, maxDesigns: 100 }, features: { pdfBranding: true, excelImport: true } };
+const BLANK = { hasBranches: false, branchName: '', branchOwnerName: '', branchOwnerEmail: '', branchOwnerPassword: '', name: '', contactName: '', loginEmail: '', password: '', phone: '', alternatePhone: '', address: '', website: '', taxId: '', pan: '', planId: '', status: 'active', notes: '', limits: { maxConcurrentLogins: 2, maxBranches: 3, maxClients: 100, maxDesigns: 100 }, features: { pdfBranding: true, excelImport: true } };
 
 // always has a letter and a digit, as the password rules require
 const randomPassword = () => {
@@ -125,6 +125,7 @@ function CompanyForm({ company, onClose, onSaved }) {
         )}
         {!editing && <FormField label="Contact person" optional error={v.error('contactName')}><NameInput value={form.contactName} onValue={(x) => set({ contactName: x })} /></FormField>}
         <FormField label="Phone" optional error={v.error('phone')}><PhoneInput maxLength={20} value={form.phone} onValue={(x) => set({ phone: x })} /></FormField>
+        <FormField label="Alternate phone" optional error={v.error('alternatePhone')}><PhoneInput maxLength={20} value={form.alternatePhone || ''} onValue={(x) => set({ alternatePhone: x })} /></FormField>
         <FormField label="Website" optional error={v.error('website')}><Input value={form.website} onValue={(x) => set({ website: x })} placeholder="www.company.com" /></FormField>
         <FormField label="GSTIN" optional error={v.error('taxId')}><Input maxLength={15} value={form.taxId} onValue={(x) => set({ taxId: x.replace(/[^A-Za-z0-9]/g, '').toUpperCase() })} /></FormField>
         <FormField label="PAN" optional error={v.error('pan')}><Input maxLength={10} value={form.pan || ''} onValue={(x) => set({ pan: x.replace(/[^A-Za-z0-9]/g, '').toUpperCase() })} /></FormField>
