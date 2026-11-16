@@ -742,16 +742,46 @@ export async function generatePdf({ design, project, place, finance, snapshot, c
   y = section(doc, r, `Bill of materials (${finance.currency})`, y);
 
   // every product once: item, specification, quantity and its price, in the catalog's categories
-  // (the former bill of materials and price summary were the same list twice)
-  const rows = proposalBomRows(design).map((x) => ({ group: x.group, order: x.order, cells: [x.item, x.spec, x.qty, x.unit, x.amount == null ? 'Included' : money(x.amount)] }));
+  // Combined pricing: Item + Amount only (no Spec / Qty / Unit), full group name, no section heading
+  const combinedBom = !cost.isPackage && cost.productPricingMode === 'combined' && (cost.pricingGroups || []).length > 0;
+  const itemW = CW - 11 - 40;
+  const rows = proposalBomRows(design).map((x) => ({
+    group: x.group,
+    order: x.order,
+    cells: combinedBom
+      ? [x.item, x.amount == null ? 'Included' : money(x.amount)]
+      : [x.item, x.spec, x.qty, x.unit, x.amount == null ? 'Included' : money(x.amount)],
+  }));
 
   autoTable(doc, {
     ...table(),
     startY: y,
-    head: [['#', 'Item', 'Specification', 'Qty', 'Unit', 'Amount']],
-    body: groupedBom(rows, brand, 6),
-    ...numeric(3, 5),
-    columnStyles: { 0: { cellWidth: 11, halign: 'center', cellPadding: { top: 2.3, bottom: 2.3, left: 1, right: 1 } }, 1: { cellWidth: 40, fontStyle: 'bold', textColor: INK }, 2: { cellWidth: 66 }, 3: { halign: 'right', cellWidth: 14 }, 4: { cellWidth: 14 }, 5: { halign: 'right', cellWidth: 33 } },
+    head: [combinedBom ? ['#', 'Item', 'Amount'] : ['#', 'Item', 'Specification', 'Qty', 'Unit', 'Amount']],
+    body: groupedBom(rows, brand, combinedBom ? 3 : 6),
+    ...(combinedBom ? numeric(2) : numeric(3, 5)),
+    columnStyles: combinedBom
+      ? {
+          0: { cellWidth: 11, halign: 'center', cellPadding: { top: 2.3, bottom: 2.3, left: 1, right: 1 }, valign: 'top' },
+          1: { cellWidth: itemW, fontStyle: 'bold', textColor: INK, overflow: 'linebreak', valign: 'top' },
+          2: { halign: 'right', cellWidth: 40, valign: 'top' },
+        }
+      : {
+          0: { cellWidth: 11, halign: 'center', cellPadding: { top: 2.3, bottom: 2.3, left: 1, right: 1 } },
+          1: { cellWidth: 40, fontStyle: 'bold', textColor: INK },
+          2: { cellWidth: 66 },
+          3: { halign: 'right', cellWidth: 14 },
+          4: { cellWidth: 14 },
+          5: { halign: 'right', cellWidth: 33 },
+        },
+    didParseCell: combinedBom
+      ? (d) => {
+          if (d.section !== 'body' || d.column.index !== 1) return;
+          // full name, wrap onto as many lines as needed — never truncate with …
+          const raw = String(d.cell.raw ?? (Array.isArray(d.cell.text) ? d.cell.text.join(' ') : d.cell.text) ?? '');
+          d.cell.styles.overflow = 'linebreak';
+          d.cell.text = doc.splitTextToSize(raw, itemW - 3);
+        }
+      : undefined,
   });
   y = doc.lastAutoTable.finalY + 3;
 

@@ -1,5 +1,6 @@
 // The price breakdown saved with every proposal (design.summary.pricing). Bills and the invoice are built from it.
 import { computeGst } from './energy.js';
+import { groupNameFromMembers, pricedMemberCatalog } from './pricingGroups.js';
 import { defaultTaxRate } from './tax.js';
 
 const n = (v) => Number(v) || 0;
@@ -357,15 +358,22 @@ export function pricingFromQuote(quote) {
 export function pricingFrom3D(design, config) {
   const defGst = n(config.gstPercent) || defaultTaxRate(); // no rate of its own: the company's
   const { cost, totals, spec } = design;
+  const combined = !cost.isPackage && (config.productPricingMode || cost.productPricingMode) === 'combined';
+  const groups = combined ? (config.pricingGroups || cost.pricingGroups || []) : [];
+  const groupedKeys = new Set(groups.flatMap((g) => g.memberKeys || []));
   let lines;
   if (cost.isPackage) {
     lines = packageToPricingLines(cost.package, cost.packagePrice, defGst);
   } else {
-    lines = [
-      { name: 'Solar modules', detail: `${totals.count} x ${spec.name}`, qty: totals.count, unit: 'nos', rate: spec.price, amount: cost.panels, gstPercent: spec.gstPercent ?? defGst, hsn: spec.hsnCode || '' },
-      { name: 'Mounting structure', detail: design.pillar?.name || '', qty: 1, unit: 'Nos', rate: cost.pillars, amount: cost.pillars, gstPercent: design.pillar?.gstPercent ?? defGst, hsn: design.pillar?.hsnCode || '7308' },
-    ];
+    lines = [];
+    if (!groupedKeys.has('modules')) {
+      lines.push({ name: 'Solar modules', detail: `${totals.count} x ${spec.name}`, qty: totals.count, unit: 'nos', rate: spec.price, amount: cost.panels, gstPercent: spec.gstPercent ?? defGst, hsn: spec.hsnCode || '' });
+    }
+    if (!groupedKeys.has('structure')) {
+      lines.push({ name: 'Mounting structure', detail: design.pillar?.name || '', qty: 1, unit: 'Nos', rate: cost.pillars, amount: cost.pillars, gstPercent: design.pillar?.gstPercent ?? defGst, hsn: design.pillar?.hsnCode || '7308' });
+    }
     for (const m of cost.categoryMaterials || []) {
+      if (groupedKeys.has(`material:${m.categoryId}`)) continue;
       lines.push({
         name: m.categoryName,
         detail: m.productName,
@@ -377,11 +385,26 @@ export function pricingFrom3D(design, config) {
         hsn: m.hsnCode,
       });
     }
+    const catalog = pricedMemberCatalog(design);
+    for (const g of groups) {
+      if (!(g.memberKeys || []).length) continue;
+      lines.push({
+        name: groupNameFromMembers(g.memberKeys, catalog),
+        detail: 'Combined products',
+        qty: 1,
+        unit: 'Set',
+        rate: n(g.price),
+        amount: n(g.price),
+        gstPercent: g.gstPercent != null && g.gstPercent !== '' ? n(g.gstPercent) : defGst,
+        hsn: '',
+      });
+    }
   }
   // products added by hand, with or without a package
-  for (const x of cost.extraItems || []) {
+  (cost.extraItems || []).forEach((x, i) => {
+    if (groupedKeys.has(`extra:${i}`)) return;
     lines.push({ name: x.name, detail: x.detail || 'Additional product', qty: Number(x.qty) || 1, unit: x.unit || 'Nos', rate: Number(x.price) || 0, amount: (Number(x.qty) || 1) * (Number(x.price) || 0), gstPercent: x.gstPercent != null && x.gstPercent !== '' ? Number(x.gstPercent) : defGst, hsn: x.hsn || '' });
-  }
+  });
   return buildPricing({
     lines,
     floorPlacement: cost.floorPlacement,

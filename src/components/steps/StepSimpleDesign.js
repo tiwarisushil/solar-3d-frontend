@@ -29,10 +29,12 @@ import BuildingBreakdown from './BuildingBreakdown';
 import { catalogMaterialLineTotal } from '@/lib/pricing';
 import { GstSummary } from './GstSummary';
 import ChargePicker from '../dashboard/ChargePicker';
+import PricingGroups from './PricingGroups';
 import { api } from '@/lib/api';
 import { validUntilInput } from '@/lib/validity';
 import { NumField, Toggle, toast } from '../kit';
 import { defaultTaxRate, taxName } from '@/lib/tax';
+import { emptyPricingGroup } from '@/lib/pricingGroups';
 
 const Scene3D = dynamic(() => import('../scene/Scene3D'), { ssr: false });
 
@@ -1357,6 +1359,46 @@ export default function StepSimpleDesign({ design, stage = 'panels', actions = [
                 </div>
                 <GstSummary cost={design.cost} config={config} onConfig={(p) => s.patch('config', p)} money={money} />
               </>
+            ) : (config.productPricingMode || 'separate') === 'combined' && (design.cost.pricingGroups || []).length > 0 ? (
+              <>
+                {(design.cost.pricingGroups || []).map((g) => (
+                  <div key={g.id} className="flex justify-between py-0.5">
+                    <span className="font-medium text-slate-900">{g.name || 'Product group'}</span>
+                    <b>{money(g.price)}</b>
+                  </div>
+                ))}
+                {(design.cost.categoryMaterials || []).filter((m) => !m.grouped).map((m) => (
+                  <div key={m.categoryId} className="flex justify-between py-0.5 text-sm text-slate-600">
+                    <span>{m.categoryName}: {m.productName} (×{m.qty} {m.unit})</span>
+                    <b>{money(m.baseTotal ?? m.total)}</b>
+                  </div>
+                ))}
+                {(design.cost.extraItems || []).map((x, i) => {
+                  const key = `extra:${i}`;
+                  if ((design.cost.pricingGroups || []).some((g) => (g.memberKeys || []).includes(key))) return null;
+                  return <div key={`x${i}`} className="flex justify-between py-0.5 text-sm text-slate-600"><span>{x.name} ({x.qty} {x.unit || 'Nos'})</span><b>{money((Number(x.qty) || 1) * (Number(x.price) || 0))}</b></div>;
+                })}
+                {!(design.cost.pricingGroups || []).some((g) => (g.memberKeys || []).includes('modules')) && (
+                  <div className="flex justify-between py-0.5 text-sm text-slate-600"><span>{count} × {spec.watts} W panel</span><b>{money(design.cost.panels)}</b></div>
+                )}
+                {!(design.cost.pricingGroups || []).some((g) => (g.memberKeys || []).includes('structure')) && structure.columns > 0 && (
+                  <div className="flex justify-between py-0.5 text-sm text-slate-600"><span>Structure · {Math.round(design.cost.pillarFt)} ft</span><b>{money(design.cost.pillars)}</b></div>
+                )}
+                {Number(design.cost.floorCost) > 0 && (
+                  <div className="flex justify-between py-0.5 text-sm text-slate-600">
+                    <span>Floor placement (Floor {config.floorPlacement})</span>
+                    <b>{money(design.cost.floorCost)}</b>
+                  </div>
+                )}
+                {(design.cost.installationCharges || []).map((c, i) => (
+                  <div key={i} className="flex justify-between py-0.5 text-sm text-slate-600"><span>{c.name}</span><b>{money(c.price)}</b></div>
+                ))}
+                <div className="mt-1 flex justify-between border-t border-slate-200 pt-1.5 text-lg">
+                  <span className="font-semibold">{(design.cost.gstAmount || 0) > 0.001 ? `Subtotal (before ${taxName()})` : 'Total'}</span>
+                  <b>{money(design.cost.subtotal ?? design.cost.total)}</b>
+                </div>
+                <GstSummary cost={design.cost} config={config} onConfig={(p) => s.patch('config', p)} money={money} />
+              </>
             ) : (
               <>
                 <div className="flex justify-between py-0.5">
@@ -1908,11 +1950,16 @@ export default function StepSimpleDesign({ design, stage = 'panels', actions = [
                   </div>
                   {/* the panel and the pole first, then every product of the company's catalog */}
                   {/* the panel and the pole are chosen on the Package step (they decide the layout) */}
-                  <ProductRow label="Panel" total={money(design.cost.panels)} qty={`${count} nos`}>
+                  {(() => {
+                    const combinedOn = (config.productPricingMode || 'separate') === 'combined';
+                    const inGroup = (key) => combinedOn && (config.pricingGroups || []).some((g) => (g.memberKeys || []).includes(key));
+                    return (
+                      <>
+                  <ProductRow label="Panel" total={inGroup('modules') ? 'Included' : money(design.cost.panels)} qty={`${count} nos`}>
                     <button type="button" disabled={s.readOnly} onClick={() => s.setStep(SIMPLE_SLUGS.indexOf('system'))} title="Change on the Package step" className="truncate text-left text-sm text-slate-800 hover:underline">{spec.brand} {spec.model || ''} · {spec.watts} W</button>
                   </ProductRow>
                   {(structure.columns > 0 || !structure.hooks) && (
-                    <ProductRow label="Pole & structure" total={money(design.cost.pillars)} qty={`${Math.round(design.cost.pillarFt)} ft`}>
+                    <ProductRow label="Pole & structure" total={inGroup('structure') ? 'Included' : money(design.cost.pillars)} qty={`${Math.round(design.cost.pillarFt)} ft`}>
                       <button type="button" disabled={s.readOnly} onClick={() => s.setStep(SIMPLE_SLUGS.indexOf('system'))} title="Change on the Package step" className="truncate text-left text-sm text-slate-800 hover:underline">{design.pillar.name}</button>
                     </ProductRow>
                   )}
@@ -1920,6 +1967,7 @@ export default function StepSimpleDesign({ design, stage = 'panels', actions = [
                     const entry = config.customMaterials?.[cat.id] || {};
                     const line = (design.cost.categoryMaterials || []).find((m) => m.categoryId === cat.id);
                     const setEntry = (patch) => s.patch('config', { customMaterials: { ...(config.customMaterials || {}), [cat.id]: { ...entry, ...patch } } });
+                    const grouped = inGroup(`material:${cat.id}`);
                     // the inverter against the design: how many the strings need, and whether it is big enough
                     const el = design.electrical || {};
                     const isInv = /inverter/i.test(cat.name) && line && count > 0;
@@ -1936,7 +1984,7 @@ export default function StepSimpleDesign({ design, stage = 'panels', actions = [
                         </p>
                       ) : null;
                     return (
-                      <ProductRow key={cat.id} label={cat.name} note={invNote} total={line ? money(line.baseTotal ?? line.total) : '—'}
+                      <ProductRow key={cat.id} label={cat.name} note={invNote} total={!line ? '—' : grouped ? 'Included' : money(line.baseTotal ?? line.total)}
                         qty={entry.productId ? <NumField min={1} title="Quantity" disabled={s.readOnly} className="h-10 w-16 rounded-lg border border-slate-300 bg-white px-1 text-center text-sm" value={entry.qty ?? 1} onValue={(v) => setEntry({ qty: v })} /> : null}>
                         <select disabled={s.readOnly} className={PICK} value={entry.productId || ''} onChange={(e) => {
                           const p = cat.products.find((x) => x.id === e.target.value);
@@ -1948,10 +1996,60 @@ export default function StepSimpleDesign({ design, stage = 'panels', actions = [
                       </ProductRow>
                     );
                   })}
+                      </>
+                    );
+                  })()}
                 </div>
               )}
 
               {!isPkg && <p className="-mt-3 text-xs text-slate-500">* Before {taxName()}. Only catalog items you pick on this step are in the price; anything left on &ldquo;Not included&rdquo; is not charged.</p>}
+              {!isPkg && (
+                <div className="rounded-xl border border-slate-200 bg-white p-4">
+                  <div className="mb-1.5 text-sm font-medium text-slate-700">Product pricing</div>
+                  <div className="grid grid-cols-2 gap-1 rounded-lg bg-slate-200/70 p-1">
+                    {[
+                      ['separate', 'Separate'],
+                      ['combined', 'Combined'],
+                    ].map(([mode, label]) => (
+                      <button
+                        key={mode}
+                        type="button"
+                        disabled={s.readOnly}
+                        onClick={() => {
+                          if ((config.productPricingMode || 'separate') === mode) return;
+                          const patch = { productPricingMode: mode };
+                          if (mode === 'combined' && !(config.pricingGroups || []).length) patch.pricingGroups = [emptyPricingGroup()];
+                          s.patch('config', patch);
+                        }}
+                        className={cx(
+                          'h-10 rounded-md text-[15px] font-semibold transition',
+                          (config.productPricingMode || 'separate') === mode
+                            ? 'bg-brand text-brand-fg shadow-sm'
+                            : 'text-slate-700 hover:bg-white/70 hover:text-slate-900',
+                        )}
+                      >
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+                  <p className="mt-2 text-sm text-slate-600">
+                    {(config.productPricingMode || 'separate') === 'combined'
+                      ? 'Group products and set one sell price per group for the proposal.'
+                      : 'Each product keeps its own unit price on the proposal.'}
+                  </p>
+                  {(config.productPricingMode || 'separate') === 'combined' && (
+                    <div className="mt-3">
+                      <PricingGroups
+                        design={design}
+                        groups={config.pricingGroups || []}
+                        money={money}
+                        readOnly={s.readOnly}
+                        onChange={(pricingGroups) => s.patch('config', { pricingGroups })}
+                      />
+                    </div>
+                  )}
+                </div>
+              )}
               {want > count && (
                 <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
                   The package has <b>{want} panels</b>; <b>{count}</b> are placed. Place the other <b>{want - count}</b> yourself on the Panels step (Add base, then Add panel) — the price stays the package&rsquo;s.

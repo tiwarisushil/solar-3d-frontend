@@ -1,6 +1,7 @@
 // Every line of the proposal's price table ("Bill of materials" in the PDF), worked out once so the
 // Products step can show the same list the PDF prints. `amount` is a number for priced lines, null for items included in another line's price.
 import { capFirst } from './catalog.js';
+import { groupNameFromMembers, pricedMemberCatalog } from './pricingGroups.js';
 import { currentTax } from './tax.js';
 
 /** Rows in print order: { key, group, order, item, spec, qty, unit, amount }. */
@@ -9,6 +10,10 @@ export function proposalBomRows(design) {
   const rows = [];
   const add = (group, order, item, specText, qty, unit, amount = null) => rows.push({ group, order, item: String(item ?? '').trim() || 'Item', spec: String(specText ?? '').trim() || '-', qty: qty ?? 1, unit: unit || 'nos', amount: amount == null ? null : Math.round(Number(amount) || 0) });
   const CHARGES = { group: 'Installation & charges', order: 1e9 };
+  const combined = !cost.isPackage && cost.productPricingMode === 'combined' && (cost.pricingGroups || []).length > 0;
+  const groupedKeys = new Set((cost.pricingGroups || []).flatMap((g) => g.memberKeys || []));
+  // Combined mode: skip members entirely — only the group rows (and any ungrouped lines) are listed
+  const skip = (key) => combined && groupedKeys.has(key);
   if (cost.isPackage) {
     // the package: its items are included in one price
     const pkg = cost.package;
@@ -18,23 +23,39 @@ export function proposalBomRows(design) {
     }
     add('Package', 1e9 - 1, `Package: ${pkg?.name || 'All-inclusive solar package'}`, pkg?.description || `${totals.kwp.toFixed(2)} kW complete turnkey rooftop package, all items above included`, 1, 'set', cost.packagePrice);
   } else {
-    add(spec.parentName, spec.parentOrder, 'Solar modules', [spec.brand, spec.model, `${spec.watts} W`, `(${spec.length} x ${spec.width} m)`].filter(Boolean).join(' '), totals.count, 'nos', cost.panels);
-    if (design.structure.columns > 0) {
-      // one row per kind of pole in use (each base may stand on its own pole)
-      for (const p of design.poles?.length ? design.poles : [{ pillar: design.pillar, ft: cost.pillarFt, columns: design.structure.columns }]) {
-        add(p.pillar?.parentName, p.pillar?.parentOrder, `Mounting structure (${p.pillar?.name || 'Poles'})`, `${Math.ceil(p.ft)} ft total (${p.pillar?.shape || 'iron column'}): ${p.columns} poles ${Math.ceil((p.columnM || 0) * 3.281)} ft${p.rafterM ? `, rafters ${Math.ceil(p.rafterM * 3.281)} ft` : ''}${p.purlinM ? `, purlins ${Math.ceil(p.purlinM * 3.281)} ft` : ''}${p.braceM ? `, bracing ${Math.ceil(p.braceM * 3.281)} ft` : ''}`, Math.ceil(p.ft), 'ft', p.ft * (p.pillar?.pricePerFt || 0));
+    if (combined) {
+      const catalog = pricedMemberCatalog(design);
+      for (const g of cost.pricingGroups) {
+        const name = groupNameFromMembers(g.memberKeys, catalog);
+        // empty group → no "Combined pricing" section heading in the PDF
+        add('', 0, name, '', 1, 'set', g.price);
       }
-    } else if (design.structure.hooks > 0) {
-      add(spec.parentName, spec.parentOrder, 'Mounting structure (roof hooks / rails)', 'Flush-mounted roof rails and hooks', design.structure.hooks, 'nos', cost.pillars > 0 ? cost.pillars : null);
     }
-    for (const m of cost.categoryMaterials || []) add(m.parentName, m.parentOrder, m.categoryName, m.productName, m.qty, m.unit || 'nos', m.total);
+    if (!skip('modules')) {
+      add(spec.parentName, spec.parentOrder, 'Solar modules', [spec.brand, spec.model, `${spec.watts} W`, `(${spec.length} x ${spec.width} m)`].filter(Boolean).join(' '), totals.count, 'nos', cost.panels);
+    }
+    if (!skip('structure')) {
+      if (design.structure.columns > 0) {
+        // one row per kind of pole in use (each base may stand on its own pole)
+        for (const p of design.poles?.length ? design.poles : [{ pillar: design.pillar, ft: cost.pillarFt, columns: design.structure.columns }]) {
+          add(p.pillar?.parentName, p.pillar?.parentOrder, `Mounting structure (${p.pillar?.name || 'Poles'})`, `${Math.ceil(p.ft)} ft total (${p.pillar?.shape || 'iron column'}): ${p.columns} poles ${Math.ceil((p.columnM || 0) * 3.281)} ft${p.rafterM ? `, rafters ${Math.ceil(p.rafterM * 3.281)} ft` : ''}${p.purlinM ? `, purlins ${Math.ceil(p.purlinM * 3.281)} ft` : ''}${p.braceM ? `, bracing ${Math.ceil(p.braceM * 3.281)} ft` : ''}`, Math.ceil(p.ft), 'ft', p.ft * (p.pillar?.pricePerFt || 0));
+        }
+      } else if (design.structure.hooks > 0) {
+        add(spec.parentName, spec.parentOrder, 'Mounting structure (roof hooks / rails)', 'Flush-mounted roof rails and hooks', design.structure.hooks, 'nos', cost.pillars > 0 ? cost.pillars : null);
+      }
+    }
+    for (const m of cost.categoryMaterials || []) {
+      if (skip(`material:${m.categoryId}`)) continue;
+      add(m.parentName, m.parentOrder, m.categoryName, m.productName, m.qty, m.unit || 'nos', m.total);
+    }
   }
   // products added by hand: listed with the package or the chosen materials, whichever pricing is used
   const EXTRA = { group: 'Additional products', order: 1e9 - 2 };
-  for (const x of cost.extraItems || []) {
+  (cost.extraItems || []).forEach((x, i) => {
+    if (skip(`extra:${i}`)) return;
     const qty = Number(x.qty) || 1;
     add(EXTRA.group, EXTRA.order, x.name, x.detail || 'Additional product', qty, x.unit || 'Nos', qty * (Number(x.price) || 0));
-  }
+  });
   if (Number(cost.floorCost) > 0) add(CHARGES.group, CHARGES.order, 'Floor placement', cost.floorPlacement === 0 ? 'Ground level' : `Floor ${cost.floorPlacement} installation surcharge`, 1, 'nos', cost.floorCost);
   for (const c of cost.installationCharges || []) add(CHARGES.group, CHARGES.order, c.name, 'Installation charge', 1, 'nos', c.price);
   // a stable key per line (for lists)
@@ -87,6 +108,8 @@ function howOf(row, design, money) {
   if (row.item === 'Floor placement') return 'Set under Floor placement';
   if (row.spec === 'Installation charge') return 'Added under Installation charges';
   if (row.item.startsWith('Package:')) return 'The price of the chosen package';
+  if (row.group === 'Combined pricing') return 'Combined sell price for the products listed in the group';
+  if (row.amount == null && cost.productPricingMode === 'combined') return 'Included in a combined pricing group';
   const rule = RULES.find(([re]) => re.test(row.item));
   if (rule) return rule[1](design);
   if (row.group === 'Additional products') return 'Added under Additional products';

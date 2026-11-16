@@ -31,7 +31,7 @@ const initial = {
   buildingId: null, // transient: the building being edited on the roof step
   sections: [], // {id, name, building, points, height, parapetH, parapetT}
   objects: [], // array | zone | tree | block
-  config: { specId: '', pillarId: '', orientation: 'portrait', tilt: 15, azimuthMode: 'building', azimuth: 180, setback: 0.6, frontLeg: 0.4, rowsPerTable: 2, rowGap: 0, maxPanels: 0, targetKw: 0, sizeBy: 'bill', sizeBill: '', sizeKw: '', pricingMode: 'custom', packageId: '', floorPlacement: 0, floorCost: 0, installationCharges: [], outlookYears: 10, tariff: 0, customMaterials: {}, withGst: true, gstPercent: undefined }, // sized by monthly bill or by kW; both are kept so switching shows the same system either way
+  config: { specId: '', pillarId: '', orientation: 'portrait', tilt: 15, azimuthMode: 'building', azimuth: 180, setback: 0.6, frontLeg: 0.4, rowsPerTable: 2, rowGap: 0, maxPanels: 0, targetKw: 0, sizeBy: 'bill', sizeBill: '', sizeKw: '', pricingMode: 'custom', packageId: '', productPricingMode: 'separate', pricingGroups: [], floorPlacement: 0, floorCost: 0, installationCharges: [], outlookYears: 10, tariff: 0, customMaterials: {}, withGst: true, gstPercent: undefined }, // sized by monthly bill or by kW; both are kept so switching shows the same system either way
   electrical: { inverterId: 'auto', strings: [] }, // strings: [{id, name, modules: [moduleId]}] the user picked by hand
   activeStringId: null, // transient: the string being filled with the string tool
   finance: { currency: 'INR', tariff: 8, costPerKw: 55000, efficiency: 85, degradation: 0.5, init: false },
