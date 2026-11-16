@@ -129,3 +129,29 @@ export async function analyseSystemShading({ panels, obstacles, sunDir, sampling
   const pct = (a) => (totalArea > 0 ? (a / totalArea) * 100 : 0);
   return { panelCount: panels.length, totalArea, litArea, shadedArea, backlitArea, effectiveOutputPercent: pct(litArea), shadedAreaPercent: pct(shadedArea), backlitPercent: pct(backlitArea), raysCast, panels: results };
 }
+
+/** Coarse grid for the interactive heatmap (keeps scrubbing responsive). */
+const LIVE_GRID = 4;
+
+/**
+ * Per-module lit fraction for the live 3D heatmap. Rays hit the same castShadow meshes the GPU
+ * uses (walls, roofs, trees, blocks, racks) but skip panel InstancedMeshes so large arrays stay fast
+ * and the tint matches the shadow you see on screen.
+ * @param {Object} args
+ * @param {import('./sceneAdapter.js').SolarPanel[]} args.panels
+ * @param {THREE.Object3D[]} args.obstacles
+ * @param {THREE.Vector3} args.sunDir
+ * @param {number} [args.grid]
+ * @returns {Map<string, number>} moduleId → litFraction 0..1
+ */
+export function liveMeshLitFractions({ panels, obstacles, sunDir, grid = LIVE_GRID }) {
+  const scratch = { raycaster: new THREE.Raycaster(), point: new THREE.Vector3(), hits: [] };
+  scratch.raycaster.far = Infinity;
+  const dir = sunDir.clone().normalize();
+  const out = new Map();
+  for (const p of panels) {
+    const s = samplePanel(p, dir, obstacles, grid, scratch);
+    out.set(p.id, s.lit / s.total);
+  }
+  return out;
+}

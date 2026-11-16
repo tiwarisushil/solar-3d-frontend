@@ -8,7 +8,7 @@ import { azimuthsMatch, DEG, edgeOutwardAz } from '@/lib/geo';
 import { dist, edges, pointInPolygon, polygonArea, polygonCentroid, rectPoly } from '@/lib/geometry';
 import { addBase, togglePanelAt, withinPackage } from '@/lib/autofill';
 import { stringPaint, stringStroke } from '@/lib/strings';
-import { blockOutline, isCylinder, magnetize, newId, normSection, planeAt, resizeBase, ridgeSegment, roofClearance, roofPlanes, shedEdgeKind, snapSlopeAz, slotAt, slotsBetween, topSection, PATH_COLORS } from '@/lib/model';
+import { blockOutline, computeDragGuides, isCylinder, magnetize, newId, normSection, planeAt, resizeBase, ridgeSegment, roofClearance, roofPlanes, shedEdgeKind, snapSlopeAz, slotAt, slotsBetween, topSection, PATH_COLORS } from '@/lib/model';
 import { staticMapSize, staticMapUrl } from '@/lib/staticMap';
 import { useStore } from '@/lib/store';
 
@@ -198,6 +198,7 @@ export default function Editor2D({ design, showPanels = true, showObjects = true
   const [cursor, setCursor] = useState(null);
   const [area, setArea] = useState(null); // rectangle being dragged with the mark-area tool
   const [baseDraft, setBaseDraft] = useState(null); // the base being dragged out with the add-base tool
+  const [dragGuides, setDragGuides] = useState(null); // Canva-style align + gap guides while moving a base
   const drag = useRef(null);
   const fitted = useRef(false);
 
@@ -210,6 +211,7 @@ export default function Editor2D({ design, showPanels = true, showObjects = true
   const currentBuilding = buildingList(buildings).some((b) => b.id === activeBuilding) ? activeBuilding : buildingList(buildings)[0].id;
   const objects = useStore((s) => s.objects);
   const config = useStore((s) => s.config);
+  const structuresOnly = useStore((s) => s.structuresOnly);
   const st = useStore.getState;
 
   // older drawings kept the lift and staircase as obstacles. They are flat roofs now, so panels can sit on them.
@@ -445,10 +447,14 @@ export default function Editor2D({ design, showPanels = true, showObjects = true
           const c = polygonCentroid(points);
           s.updateObject(d.id, { points, x: c.x, y: c.y });
         }
+        if (dragGuides) setDragGuides(null);
       } else {
         const o = s.objects.find((k) => k.id === d.id);
         const pos = { x: d.x + dx, y: d.y + dy };
-        s.updateObject(d.id, o?.type === 'array' && !e.altKey ? magnetize(o, pos, design) : pos);
+        const next = o?.type === 'array' && !e.altKey ? magnetize(o, pos, design) : pos;
+        s.updateObject(d.id, next);
+        if (o?.type === 'array') setDragGuides(computeDragGuides(o, next, design));
+        else if (dragGuides) setDragGuides(null);
       }
     } else if (d.kind === 'ridge') {
       const raw = st().sections.find((x) => x.id === d.sectionId);
@@ -495,6 +501,7 @@ export default function Editor2D({ design, showPanels = true, showObjects = true
   const onUp = () => {
     const d = drag.current;
     drag.current = null;
+    if (dragGuides) setDragGuides(null);
     if (d?.kind === 'base') {
       const draft = baseDraft;
       setBaseDraft(null);
@@ -559,6 +566,13 @@ export default function Editor2D({ design, showPanels = true, showObjects = true
   return (
     <div ref={ref} className="absolute inset-0 touch-none select-none overflow-hidden bg-[#0b1020]" style={{ cursor: cursorStyle }} onWheel={onWheel} onPointerDown={onDown} onPointerMove={onMove} onPointerUp={onUp}>
       <svg width={size.w} height={size.h} className="block">
+        <defs>
+          <pattern id="path-net" width="8" height="8" patternUnits="userSpaceOnUse">
+            <rect width="8" height="8" fill="transparent" />
+            <rect width="2.5" height="8" fill={PATH_COLORS.row} />
+            <rect width="8" height="2.5" fill={PATH_COLORS.row} />
+          </pattern>
+        </defs>
         {images.map((im) => {
           const tl = toS({ x: -im.size / 2, y: im.size / 2 });
           return <image key={im.zoom} href={im.url} x={tl.x} y={tl.y} width={im.size * view.scale} height={im.size * view.scale} preserveAspectRatio="none" />;
@@ -669,14 +683,14 @@ export default function Editor2D({ design, showPanels = true, showObjects = true
                 {empty && t.size.width * view.scale > 48 && (
                   <text x={centre.x} y={centre.y + 4} textAnchor="middle" fontSize="12" fontWeight="700" fill="#0f172a" pointerEvents="none">Empty base</text>
                 )}
-                {t.modules.map((m) => {
+                {!structuresOnly && t.modules.map((m) => {
                   const si = stringColors?.get(m.id);
                   return <polygon key={m.id} points={pts(m.corners)} fill={!t.valid ? 'rgba(239,68,68,0.7)' : si != null ? si : 'rgba(40,98,235,0.85)'} stroke={elevated || sel ? ORANGE : '#dbe6ff'} strokeWidth={0.8} />;
                 })}
                 {/* pathways left between rows / columns: walkway strips; a selected base also shows the
                     width of the first one in each direction as a dimension mark */}
                 {(t.pathways || []).map((p, pi) => (
-                  <polygon key={`${p.axis}-${pi}`} points={pts(p.poly)} fill={PATH_COLORS[p.axis]} fillOpacity={0.5} stroke={PATH_COLORS[p.axis]} strokeWidth={1} pointerEvents="none" />
+                  <polygon key={`${p.axis}-${pi}`} points={pts(p.poly)} fill="url(#path-net)" stroke={PATH_COLORS[p.axis]} strokeWidth={1} pointerEvents="none" />
                 ))}
                 {sel && ['row', 'col'].map((axis) => t.pathways?.find((p) => p.axis === axis)).filter(Boolean).map((p) => {
                   const a = toS(p.dim[0]);
@@ -713,6 +727,28 @@ export default function Editor2D({ design, showPanels = true, showObjects = true
           <g pointerEvents="none">
             <polygon points={pts(baseDraft.poly)} fill="rgba(148,163,184,0.5)" stroke="#f8fafc" strokeWidth={2} strokeDasharray="6 4" />
             <text x={toS(baseDraft.center).x} y={toS(baseDraft.center).y + 5} textAnchor="middle" fontSize="14" fontWeight="700" fill="#0f172a">{baseDraft.rows} × {baseDraft.cols} panels</text>
+          </g>
+        )}
+        {dragGuides && (
+          <g pointerEvents="none">
+            {(dragGuides.aligns || []).map((g, i) => {
+              const a = toS(g.a);
+              const b = toS(g.b);
+              return <line key={`a${i}`} x1={a.x} y1={a.y} x2={b.x} y2={b.y} stroke="#f472b6" strokeWidth={1.5} strokeDasharray="6 5" />;
+            })}
+            {(dragGuides.gaps || []).map((g, i) => {
+              const a = toS(g.a);
+              const b = toS(g.b);
+              const m = toS(g.mid);
+              const label = `${(g.dist * 3.281).toFixed(1)} ft`;
+              return (
+                <g key={`g${i}`}>
+                  <line x1={a.x} y1={a.y} x2={b.x} y2={b.y} stroke="#38bdf8" strokeWidth={1.5} />
+                  <rect x={m.x - label.length * 2.8} y={m.y - 8} width={label.length * 5.6} height={15} rx={3} fill="#0ea5e9" />
+                  <text x={m.x} y={m.y + 3.5} textAnchor="middle" fontSize="10" fontWeight="700" fill="#fff">{label}</text>
+                </g>
+              );
+            })}
           </g>
         )}
         {/* the string being built: its panels numbered in the order they were tapped, joined in that order */}

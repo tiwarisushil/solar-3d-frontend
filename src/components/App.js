@@ -1,6 +1,6 @@
 'use client';
 
-import { AlertCircle, ArrowRight, Check, Save, ChevronDown, ChevronLeft, CloudOff, Download, Eye, FileText, Loader2, QrCode, Redo2, Undo2 } from 'lucide-react';
+import { AlertCircle, ArrowRight, Check, Save, ChevronDown, ChevronLeft, CloudOff, Download, Eye, FileText, Layers, Loader2, QrCode, Redo2, Undo2 } from 'lucide-react';
 import { historyKeys, redo, startHistory, undo, useHistory } from '@/lib/history';
 import { clipboardKeys } from '@/lib/clipboard';
 import WhatsAppIcon from './icons/WhatsAppIcon';
@@ -158,8 +158,45 @@ const PRO_SCREENS = [StepLocation, StepDraw, StepRoofDetails, StepObstructions, 
 export default function App({ designId, slug }) {
   const router = useRouter();
   const company = useSession((s) => s.company);
-  const state = useStore();
+  // selective reads — a full useStore() re-rendered the whole designer on every ± / nudge
+  const project = useStore((s) => s.project);
+  const place = useStore((s) => s.place);
+  const finance = useStore((s) => s.finance);
+  const snapshot = useStore((s) => s.snapshot);
+  const client = useStore((s) => s.client);
+  const designIdState = useStore((s) => s.designId);
+  const proposalNo = useStore((s) => s.proposalNo);
+  const validUntil = useStore((s) => s.validUntil);
+  const subsidy = useStore((s) => s.subsidy);
+  const designName = useStore((s) => s.designName);
+  const origin = useStore((s) => s.origin);
+  const markedDraft = useStore((s) => s.markedDraft);
+  const catalog = useStore((s) => s.catalog);
+  const config = useStore((s) => s.config);
+  const structuresOnly = useStore((s) => s.structuresOnly);
   const design = useDesign();
+  const state = useMemo(
+    () => ({
+      project,
+      place,
+      finance,
+      snapshot,
+      client,
+      designId: designIdState,
+      proposalNo,
+      validUntil,
+      subsidy,
+      designName,
+      origin,
+      markedDraft,
+      catalog,
+      config,
+      structuresOnly,
+      set: (...a) => useStore.getState().set(...a),
+      setStep: (...a) => useStore.getState().setStep(...a),
+    }),
+    [project, place, finance, snapshot, client, designIdState, proposalNo, validUntil, subsidy, designName, origin, markedDraft, catalog, config, structuresOnly],
+  );
   const [exporting, setExporting] = useState(false);
   const saveVersion = async () => {
     setExporting(true);
@@ -371,6 +408,22 @@ export default function App({ designId, slug }) {
           <span className="shrink-0 text-xs text-slate-500" role="status">
             {blocker}
           </span>
+        )}
+        {/* hide modules so only poles / rails show; sits just before the system size */}
+        {step > 0 && design.totals.count > 0 && (
+          <button
+            type="button"
+            role="switch"
+            aria-checked={state.structuresOnly}
+            title={state.structuresOnly ? 'Show panels again' : 'Hide panels and show mounting structure only'}
+            onClick={() => state.set({ structuresOnly: !state.structuresOnly })}
+            className={cx(
+              'inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md px-2.5 text-[13px] font-medium',
+              state.structuresOnly ? 'bg-brand text-brand-fg' : 'text-slate-600 hover:bg-slate-100',
+            )}
+          >
+            <Layers className="h-3.5 w-3.5" /> Structure only
+          </button>
         )}
         {/* the system so far, next to the way forward */}
         {step > 0 && design.totals.count > 0 && (

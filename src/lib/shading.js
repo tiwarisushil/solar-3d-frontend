@@ -11,7 +11,8 @@ function raySeg(px, py, dx, dy, a, b) {
   if (Math.abs(den) < 1e-9) return -1;
   const t = ((a.x - px) * ey - (a.y - py) * ex) / den;
   const u = ((a.x - px) * dy - (a.y - py) * dx) / den;
-  return t > 1e-4 && u >= 0 && u <= 1 ? t : -1;
+  // slight u slack so a ray through a polygon vertex is not missed by both adjoining edges
+  return t > 1e-4 && u >= -1e-6 && u <= 1 + 1e-6 ? t : -1;
 }
 
 export function buildOccluders(design) {
@@ -42,6 +43,22 @@ function inside(p, poly) {
   return c;
 }
 
+function prismHeights(p, mx, my, t, dx, dy) {
+  let hi = p.hi;
+  let lo = p.lo;
+  if (p.table) {
+    // tilted plane: height depends on where the ray crosses the table footprint
+    const tb = p.table;
+    const qx = mx + dx * t - tb.x;
+    const qy = my + dy * t - tb.y;
+    const v = qx * Math.sin((tb.azimuth * Math.PI) / 180) + qy * Math.cos((tb.azimuth * Math.PI) / 180);
+    const frac = 0.5 - v / (tb.size.depth || 1);
+    hi = tb.base + tb.frontLeg + Math.max(0, Math.min(1, frac)) * (tb.backLeg - tb.frontLeg);
+    lo = hi - 0.4;
+  }
+  return { lo, hi };
+}
+
 function blocked(m, s, occ) {
   const hl = Math.hypot(s.x, s.y) || 1e-6;
   const dx = s.x / hl;
@@ -49,22 +66,16 @@ function blocked(m, s, occ) {
   const k = s.z / hl; // rise per horizontal metre
   for (const p of occ.prisms) {
     if (p.id === m.tableId) continue;
+    // already under/inside the occluder volume (overhang, overlapping footprint)
+    if (inside(m, p.poly)) {
+      const { lo, hi } = prismHeights(p, m.x, m.y, 0, dx, dy);
+      if (m.z > lo && m.z < hi) return true;
+    }
     const n = p.poly.length;
     for (let i = 0; i < n; i++) {
       const t = raySeg(m.x, m.y, dx, dy, p.poly[i], p.poly[(i + 1) % n]);
       if (t < 0) continue;
-      let hi = p.hi;
-      let lo = p.lo;
-      if (p.table) {
-        // tilted plane: height depends on where the ray crosses the table footprint
-        const tb = p.table;
-        const qx = m.x + dx * t - tb.x;
-        const qy = m.y + dy * t - tb.y;
-        const v = qx * Math.sin((tb.azimuth * Math.PI) / 180) + qy * Math.cos((tb.azimuth * Math.PI) / 180);
-        const frac = 0.5 - v / (tb.size.depth || 1);
-        hi = tb.base + tb.frontLeg + Math.max(0, Math.min(1, frac)) * (tb.backLeg - tb.frontLeg);
-        lo = hi - 0.4;
-      }
+      const { lo, hi } = prismHeights(p, m.x, m.y, t, dx, dy);
       const z = m.z + t * k;
       if (z > lo && z < hi) return true;
     }
@@ -82,26 +93,28 @@ function blocked(m, s, occ) {
   return false;
 }
 
+function moduleShadeLoss(m, samples, occ) {
+  const b = (m.tilt * Math.PI) / 180;
+  const g = (m.azimuth * Math.PI) / 180;
+  const nx = Math.sin(b) * Math.sin(g);
+  const ny = Math.sin(b) * Math.cos(g);
+  const nz = Math.cos(b);
+  let total = 0;
+  let lost = 0;
+  for (const s of samples) {
+    const cos = s.x * nx + s.y * ny + s.z * nz;
+    const beam = cos > 0 ? s.dni * cos : 0;
+    total += beam + s.dhi * (1 + nz) * 0.5;
+    if (beam > 0 && blocked(m, s, occ)) lost += beam;
+  }
+  return total > 0 ? lost / total : 0;
+}
+
 /** Returns Map(moduleId -> loss fraction 0..1). */
 export function shadingLoss(design, lat) {
   const samples = sunSamples(lat);
   const occ = buildOccluders(design);
   const out = new Map();
-  for (const m of design.modules) {
-    const b = (m.tilt * Math.PI) / 180;
-    const g = (m.azimuth * Math.PI) / 180;
-    const nx = Math.sin(b) * Math.sin(g);
-    const ny = Math.sin(b) * Math.cos(g);
-    const nz = Math.cos(b);
-    let total = 0;
-    let lost = 0;
-    for (const s of samples) {
-      const cos = s.x * nx + s.y * ny + s.z * nz;
-      const beam = cos > 0 ? s.dni * cos : 0;
-      total += beam + s.dhi * (1 + nz) * 0.5;
-      if (beam > 0 && blocked(m, s, occ)) lost += beam;
-    }
-    out.set(m.id, total > 0 ? lost / total : 0);
-  }
+  for (const m of design.modules) out.set(m.id, moduleShadeLoss(m, samples, occ));
   return out;
 }

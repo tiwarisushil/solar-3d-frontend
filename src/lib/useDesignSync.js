@@ -87,12 +87,17 @@ export function useDesignSync(designId, summary) {
       }
     };
     // `summaryOnly`: the list figures (kWp, price…) settled after loading; they are saved without
-    // telling the user anything changed, because nothing of theirs did
+    // telling the user anything changed, because nothing of theirs did.
+    // Normal edits skip the stringify compare (it blocks the main thread on every ± click); flush
+    // still serializes once when the debounce fires.
     s.markDirty = ({ summaryOnly = false } = {}) => {
-      const same = JSON.stringify(serializeDesign(useStore.getState())) === s.lastData;
-      if (same && !summaryOnly) return; // an equal value was set again: nothing to save
-      if (same && !s.dirty) s.quiet = true;
-      else if (!same) s.quiet = false;
+      if (summaryOnly) {
+        const same = JSON.stringify(serializeDesign(useStore.getState())) === s.lastData;
+        if (same && !s.dirty) s.quiet = true;
+        else if (!same) s.quiet = false;
+      } else {
+        s.quiet = false;
+      }
       s.dirty = true;
       if (readOnlyRef.current) return;
       if (!s.quiet) setSave('dirty');

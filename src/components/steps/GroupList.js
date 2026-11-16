@@ -91,10 +91,12 @@ export default function GroupList({ design }) {
                 </div>
                 {/* size: panels on it, and the base itself in panel slots */}
                 <div className="mt-1 text-xs font-semibold text-slate-800">Panels & size</div>
-                <div className="grid grid-cols-3 gap-2">
-                  {base && !empty
-                    ? <Stepper label={<><Grid2x2 className="h-4 w-4 text-slate-500" /> Panels</>} name="Panels" value={n} min={1} max={Math.max(1, fit.rows * fit.cols)} onChange={(count) => u({ count, filled: undefined, rows: fit.rows, cols: fit.cols, planted: true, auto: false })} />
-                    : <div className="text-xs text-slate-500"><Grid2x2 className="mb-1 h-4 w-4 text-slate-400" />Holds {fit.rows * fit.cols}</div>}
+                <div className="grid grid-cols-2 gap-2">
+                  <div className="col-span-2">
+                    {base && !empty
+                      ? <Stepper label={<><Grid2x2 className="h-4 w-4 text-slate-500" /> Panels</>} name="Panels" value={n} min={1} max={Math.max(1, fit.rows * fit.cols)} onChange={(count) => u({ count, filled: undefined, rows: fit.rows, cols: fit.cols, planted: true, auto: false })} />
+                      : <div className="text-xs text-slate-500"><Grid2x2 className="mb-1 h-4 w-4 text-slate-400" />Holds {fit.rows * fit.cols}</div>}
+                  </div>
                   <Stepper label={<><Rows3 className="h-4 w-4 text-slate-500" /> Rows</>} name="Rows" value={base ? fit.rows : g.rows} min={1} max={200} onChange={(rows) => u(base ? { rows: empty ? g.rows : rows, cols: empty ? g.cols : fit.cols, ...baseFor(rows, fit.cols, g, spec), auto: false } : { rows })} />
                   <Stepper label={<><Columns3 className="h-4 w-4 text-slate-500" /> Per row</>} name="Panels per row" value={base ? fit.cols : g.cols} min={1} max={500} onChange={(cols) => u(base ? { rows: empty ? g.rows : fit.rows, cols: empty ? g.cols : cols, ...baseFor(fit.rows, cols, g, spec), auto: false } : { cols })} />
                 </div>

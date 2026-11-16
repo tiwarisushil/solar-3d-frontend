@@ -48,6 +48,12 @@ const initial = {
   layoutKey: '',
   selectedId: null,
   snapshot: null,
+  // transient: hide the blue modules in 3D/plan so only the mounting structure shows
+  structuresOnly: false,
+  // transient: tint each panel in 3D by live direct-sun exposure (shade heatmap)
+  shadeHeatmap: false,
+  // transient: which base is being dragged in 3D (pose lives in Scene3D liveDrag — not written every move)
+  draggingId: null,
   // the saved design this state belongs to
   designId: null,
   proposalNo: '', // the company's running proposal number, printed as the PDF's reference

@@ -2,12 +2,12 @@
 
 // One friendly screen for home owners: see the roof in 3D, pick how many panels, done.
 
-import { AlertCircle, Box, Boxes, Building2, CalendarDays, Check, ChevronDown, Cylinder, DoorOpen, Eraser, Fence, FileText, Grid2x2Plus, Grid2x2X, Keyboard, Landmark, Loader2, Minus, Move, Package, Plus, ReceiptText, Sparkles, SquareDashed, Trash2, TreePine, Undo2, Warehouse, Wrench } from 'lucide-react';
+import { AlertCircle, AlignHorizontalSpaceAround, Box, Boxes, Building2, CalendarDays, Check, ChevronDown, Cylinder, DoorOpen, Eraser, Fence, FileText, Grid2x2Plus, Grid2x2X, Keyboard, Landmark, Loader2, Minus, Move, Package, Plus, ReceiptText, Sparkles, SquareDashed, Trash2, TreePine, Undo2, Warehouse, Wrench } from 'lucide-react';
 import dynamic from 'next/dynamic';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { SubsidyField } from '../dashboard/DesignDetail';
-import { applyMaxLayout, autoGroups, basesCapacity, clearBases, designedBases, maxRoofLayout, packageCap, plantBases, plantedTotal, restorePanels, trimPanelsTo, userBases } from '@/lib/autofill';
+import { applyMaxLayout, autoGroups, basesCapacity, clearBases, designedBases, maxRoofLayout, measureBaseGaps, packageCap, plantBases, plantedTotal, restorePanels, spaceBases, trimPanelsTo, userBases } from '@/lib/autofill';
 import { capFirst } from '@/lib/catalog';
 import { formatMoney } from '@/lib/energy';
 import { buildingList, mainSection, sectionsOf } from '@/lib/buildings';
@@ -31,7 +31,7 @@ import { GstSummary } from './GstSummary';
 import ChargePicker from '../dashboard/ChargePicker';
 import { api } from '@/lib/api';
 import { validUntilInput } from '@/lib/validity';
-import { NumField, toast } from '../kit';
+import { NumField, Toggle, toast } from '../kit';
 import { defaultTaxRate, taxName } from '@/lib/tax';
 
 const Scene3D = dynamic(() => import('../scene/Scene3D'), { ssr: false });
@@ -585,6 +585,10 @@ export default function StepSimpleDesign({ design, stage = 'panels', actions = [
   const [chosenView, setView] = useState('3d');
   const [help, setHelp] = useState(false);
   const [page, setPage] = useState(0);
+  // target gap between bases (ft); null = follow the live average until the user sets one
+  const [baseGapFt, setBaseGapFt] = useState(null);
+  // when on, every gap change re-spaces the bases immediately (no Apply click)
+  const [liveSpace, setLiveSpace] = useState(false);
   // a campus has several buildings (more than one roof was marked on the map, or the user
   // added one by drawing its outline): the building step edits one at a time
   const buildingsHere = buildingList(s.buildings).filter((b) => sectionsOf(sections, s.buildings, b.id).length);
@@ -690,6 +694,26 @@ export default function StepSimpleDesign({ design, stage = 'panels', actions = [
     return () => window.removeEventListener('keydown', onKey);
   }, [stage]);
   const bases = userBases(objects);
+  const spacing = useMemo(() => (bases.length >= 2 ? measureBaseGaps(design) : null), [bases.length, design.tables, design.spec, objects]);
+  const gapFt = baseGapFt ?? (spacing ? Math.round(spacing.suggestedM * FT * 10) / 10 : 2);
+  const applySpace = () => {
+    spaceBases(design, { gapM: gapFt / FT });
+  };
+  const setGap = (ft) => {
+    setBaseGapFt(ft);
+    if (liveSpace) spaceBases(design, { gapM: ft / FT });
+  };
+  const toggleLiveSpace = () => {
+    const on = !liveSpace;
+    setLiveSpace(on);
+    if (!on) return;
+    // lock the current reading so the live average does not fight the slider
+    if (baseGapFt == null) setBaseGapFt(gapFt);
+    spaceBases(design, { gapM: gapFt / FT });
+  };
+  useEffect(() => {
+    if (bases.length < 2 && liveSpace) setLiveSpace(false);
+  }, [bases.length, liveSpace]);
   const designed = designedBases(objects).length > 0; // the user placed or changed a base: sizing plants on the bases
   const emptyBases = bases.filter((o) => o.planted === false);
   const baseKey = JSON.stringify([designed, bases.map((o) => [o.w, o.len, o.orientation])]);
@@ -1480,7 +1504,7 @@ export default function StepSimpleDesign({ design, stage = 'panels', actions = [
               : s.tool === 'mark-area'
               ? `Tap where the ${s.pendingKey === 'tree' ? 'tree' : (s.pendingBlock?.name || 'object').toLowerCase()} is, or press and drag across it`
               : s.tool === 'string' ? ((s.electrical.strings || []).length ? 'Tap panels in wiring order, or press and drag across them · drag on empty roof to move the plan' : 'The colours show which panels are wired together')
-              : s.tool === 'add-panel' ? 'Tap a slot on a base to put a panel there (tap the button again to stop)' : s.tool === 'remove-panel' ? 'Tap a panel to take it off (tap the button again to stop)' : s.tool === 'add-base' ? 'Press and drag on the roof to draw the base · then plant panels on it' : s.tool === 'add-array' ? 'Tap on the roof where you want panels' : stage === 'building' ? 'Drag an obstacle to move it · pull its corner to resize' : 'Drag panels to move · pull the ⤡ corner to add or remove panels · orange dot turns them'}
+              : s.tool === 'add-panel' ? 'Tap a slot on a base to put a panel there (tap the button again to stop)' : s.tool === 'remove-panel' ? 'Tap a panel to take it off (tap the button again to stop)' : s.tool === 'add-base' ? 'Press and drag on the roof to draw the base · then plant panels on it' : s.tool === 'add-array' ? 'Tap on the roof where you want panels' : stage === 'building' ? 'Drag an obstacle to move it · pull its corner to resize' : 'Drag panels to move · use the bottom bar for rows, columns and turn'}
           </div>
         )}
         {view === '2d' && s.tool === 'draw-section' && (
@@ -1629,6 +1653,92 @@ export default function StepSimpleDesign({ design, stage = 'panels', actions = [
                   <button type="button" onClick={fillMax} className="mt-3 flex w-full items-center justify-center gap-2 rounded-lg bg-brand px-4 py-2.5 text-base font-semibold text-brand-fg hover:bg-brand-600"><Sparkles className="h-5 w-5" /> Fill the roof</button>
                 )}
               </div>
+              {/* space / align panel groups — plain steps: see gap → set gap → apply (or live) → optional line-up */}
+              {!s.readOnly && bases.length >= 2 && (
+                <section className="rounded-xl border border-slate-200 p-4" aria-labelledby="base-spacing-title">
+                  <h3 id="base-spacing-title" className="text-[17px] font-bold text-slate-900">Space between groups</h3>
+                  <p className="mt-1 text-[15px] leading-snug text-slate-600">
+                    Even out the gaps between your {bases.length} panel groups. Useful on larger plants.
+                  </p>
+
+                  <div
+                    className="mt-3 rounded-lg bg-slate-50 px-3 py-2.5"
+                    aria-live="polite"
+                    aria-atomic="true"
+                  >
+                    <div className="text-xs font-medium uppercase tracking-wide text-slate-500">Gap on the roof now</div>
+                    <div className="mt-0.5 text-lg font-semibold tabular-nums text-slate-900">
+                      {spacing?.hint || 'Not measured yet'}
+                    </div>
+                  </div>
+
+                  <div className="mt-4">
+                    <div className="mb-1.5 flex items-end justify-between gap-2">
+                      <label htmlFor="base-gap-slider" className="text-[15px] font-semibold text-slate-800">
+                        Set the gap
+                      </label>
+                      <span className="text-base font-bold tabular-nums text-slate-900" aria-hidden>
+                        {gapFt.toFixed(1)} ft
+                      </span>
+                    </div>
+                    <input
+                      id="base-gap-slider"
+                      type="range"
+                      min={0.5}
+                      max={12}
+                      step={0.1}
+                      value={gapFt}
+                      onChange={(e) => setGap(Number(e.target.value))}
+                      aria-valuemin={0.5}
+                      aria-valuemax={12}
+                      aria-valuenow={gapFt}
+                      aria-valuetext={`${gapFt.toFixed(1)} feet between groups`}
+                      className="h-3 w-full cursor-pointer accent-brand"
+                    />
+                    <div className="mt-1 flex justify-between text-xs text-slate-400" aria-hidden>
+                      <span>0.5 ft</span>
+                      <span>12 ft</span>
+                    </div>
+                    <div className="mt-2.5 flex flex-wrap gap-1.5" role="group" aria-label="Common gap sizes">
+                      {[1, 2, 3, 4, 6].map((ft) => (
+                        <button
+                          key={ft}
+                          type="button"
+                          aria-pressed={Math.abs(gapFt - ft) < 0.05}
+                          onClick={() => setGap(ft)}
+                          className={cx(
+                            'min-h-10 min-w-[3.25rem] rounded-lg px-3 text-[15px] font-semibold tabular-nums',
+                            Math.abs(gapFt - ft) < 0.05
+                              ? 'bg-brand text-brand-fg'
+                              : 'border border-slate-200 bg-white text-slate-700 hover:bg-slate-50',
+                          )}
+                        >
+                          {ft} ft
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div className="mt-4 rounded-lg border border-slate-100 px-3 py-2.5">
+                    <Toggle
+                      label="Update as I change the gap"
+                      description={liveSpace ? 'Groups move while you drag the slider.' : 'Turn on for live preview, or use Space evenly below.'}
+                      checked={liveSpace}
+                      onChange={(on) => { if (on !== liveSpace) toggleLiveSpace(); }}
+                    />
+                  </div>
+
+                  {!liveSpace && (
+                    <button
+                      type="button"
+                      onClick={() => applySpace()}
+                      className="mt-3 flex w-full items-center justify-center gap-2 rounded-lg bg-brand px-4 py-3 text-base font-semibold text-brand-fg hover:bg-brand-600"
+                    >
+                      <AlignHorizontalSpaceAround className="h-5 w-5" aria-hidden /> Space evenly
+                    </button>
+                  )}
+                </section>
+              )}
               {/* everything by hand sits one level down: single panels, own bases, poles, each base's settings */}
               <Fold title="More options" hint="Add or take off single panels, draw your own base, poles, pathways" open={TOOLS.includes(s.tool) || emptyBases.length > 0 || bases.some((o) => o.id === s.selectedId)}>
                 <div className="-mx-2 space-y-4">

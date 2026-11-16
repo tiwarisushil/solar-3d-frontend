@@ -1,7 +1,9 @@
 'use client';
 
+import { DEG } from './geo.js';
 import { polygonCentroid } from './geometry.js';
-import { baseFit, baseFor, buildDesign, FLUSH_STANDOFF, isBase, newId, planeAt, plantedKeys, plantedOn, slotAt, topSection, zonesForSection } from './model.js';
+import { applyLayoutPatch, hasLayoutPreview, objectWithDraft, peekLayoutDraft, scheduleAddBase } from './layoutEdit.js';
+import { baseFit, baseFor, buildDesign, FLUSH_STANDOFF, isBase, newId, planeAt, plantedKeys, plantedOn, slotAt, tableSize, topSection, zonesForSection } from './model.js';
 import { useStore } from './store.js';
 import { toast } from '../components/kit/index.js';
 
@@ -59,11 +61,14 @@ export function addBase(design, { x, y }, { rows, cols } = {}) {
   const c = s.config;
   const sec = topSection(design.sections, x, y);
   const plane = sec && planeAt(sec, x, y);
-  const n = userBases(s.objects).length;
+  const draft = peekLayoutDraft();
+  const n = userBases(s.objects).length + (draft.isNew ? 1 : 0);
   const shape = { orientation: c.orientation, tilt: plane ? plane.tilt : c.tilt, azimuth: plane ? plane.azimuth : design.azimuthFor ? design.azimuthFor(sec || design.sections[0]) : design.defaultAzimuth, frontLeg: plane ? FLUSH_STANDOFF : c.frontLeg };
   const slots = { rows: rows || (plane ? 1 : c.rowsPerTable || 2), cols: cols || 4 };
   const o = { id: newId('g'), type: 'array', name: `Base ${n + 1}`, x, y, ...shape, ...slots, ...baseFor(slots.rows, slots.cols, shape, design.spec), planted: false };
-  s.addObject(o); // an empty base: no panels yet, so it stays within any package
+  // 3D: live ghost (same path as dock ±); plan view writes immediately
+  if (hasLayoutPreview()) scheduleAddBase(o, design);
+  else s.addObject(o);
   return o;
 }
 
@@ -118,22 +123,32 @@ export function plantUpTo(count, sp, ids = null, { keepPricing = false } = {}) {
  */
 export function togglePanelAt(design, t, point, mode) {
   const s = useStore.getState();
-  const o = s.objects.find((k) => k.id === t.source);
-  if (!o || o.type !== 'array' || t.kind === 'zone') return false;
+  const o0 = s.objects.find((k) => k.id === t.source);
+  if (!o0 || o0.type !== 'array' || t.kind === 'zone') return false;
+  const o = objectWithDraft(o0);
   const slot = slotAt(t, point, design.spec);
   if (!slot) return false;
   const keys = new Set(o.planted === false ? [] : plantedKeys(o, design.spec));
   if (mode === 'add' ? keys.has(slot.key) : !keys.has(slot.key)) return false;
   if (mode === 'add') {
     const cap = packageCap();
-    if (cap && plantedTotal(s.objects, design.spec) >= cap) {
+    const draft = peekLayoutDraft();
+    const draftExtra = draft.id === o.id && draft.patch && !draft.isNew
+      ? plantedOn({ ...o0, ...draft.patch }, design.spec).count - plantedOn(o0, design.spec).count
+      : 0;
+    if (cap && plantedTotal(s.objects, design.spec) + draftExtra >= cap) {
       toast.error(capMessage(cap));
       return false;
     }
     keys.add(slot.key);
   } else keys.delete(slot.key);
   const grid = { rows: Math.max(o.rows || 0, 1), cols: Math.max(o.cols || 0, 1) };
-  s.updateObject(o.id, keys.size ? { planted: true, filled: [...keys], count: undefined, auto: false, ...grid } : { planted: false, filled: undefined, count: undefined, auto: false });
+  const patch = keys.size
+    ? { planted: true, filled: [...keys], count: undefined, auto: false, ...grid }
+    : { planted: false, filled: undefined, count: undefined, auto: false };
+  // 3D: expand only this base as a ghost (instant); store rebuild waits for idle
+  if (hasLayoutPreview() && applyLayoutPatch(o.id, patch, design)) return true;
+  s.updateObject(o.id, patch);
   return true;
 }
 
@@ -196,6 +211,205 @@ export function clearBases(ids = null) {
 export function basesCapacity(objects, spec) {
   return userBases(objects).reduce((a, o) => { const f = baseFit(o, spec); return a + f.rows * f.cols; }, 0);
 }
+
+const FT = 3.281;
+
+/** Edge-to-edge gaps along one axis, in metres (sorted left→right / front→back). */
+function axisGaps(items, getPos, getHalf) {
+  if (items.length < 2) return [];
+  const sorted = [...items].sort((a, b) => getPos(a) - getPos(b));
+  const gaps = [];
+  for (let i = 1; i < sorted.length; i++) {
+    gaps.push(getPos(sorted[i]) - getHalf(sorted[i]) - (getPos(sorted[i - 1]) + getHalf(sorted[i - 1])));
+  }
+  return gaps;
+}
+
+const gapStats = (gaps) => {
+  if (!gaps.length) return null;
+  const min = Math.min(...gaps);
+  const max = Math.max(...gaps);
+  const avg = gaps.reduce((a, g) => a + g, 0) / gaps.length;
+  return { min, max, avg, gaps };
+};
+
+/**
+ * Place items along one axis. With `gap` (metres): fixed edge gap, group centroid kept.
+ * Without: equal gaps, outermost edges stay put.
+ */
+function distributeAlong(items, getPos, getHalf, setPos, gap) {
+  if (items.length < 2) return;
+  const sorted = [...items].sort((a, b) => getPos(a) - getPos(b));
+  if (gap == null || !Number.isFinite(gap)) {
+    const left = getPos(sorted[0]) - getHalf(sorted[0]);
+    const right = getPos(sorted.at(-1)) + getHalf(sorted.at(-1));
+    const widths = sorted.reduce((a, it) => a + getHalf(it) * 2, 0);
+    const g = (right - left - widths) / (sorted.length - 1);
+    let edge = left;
+    for (const it of sorted) {
+      const half = getHalf(it);
+      setPos(it, edge + half);
+      edge += half * 2 + g;
+    }
+    return;
+  }
+  const widths = sorted.reduce((a, it) => a + getHalf(it) * 2, 0);
+  const span = widths + gap * (sorted.length - 1);
+  const center = sorted.reduce((a, it) => a + getPos(it), 0) / sorted.length;
+  let edge = center - span / 2;
+  for (const it of sorted) {
+    const half = getHalf(it);
+    setPos(it, edge + half);
+    edge += half * 2 + gap;
+  }
+}
+
+/** Bases of one building, projected onto across (u) / along (v) axes from their common facing. */
+function buildingBaseItems(list, spec) {
+  const azCounts = new Map();
+  for (const { o, t } of list) {
+    const az = Math.round(((t?.azimuth ?? o.azimuth) || 180) / 5) * 5;
+    azCounts.set(az, (azCounts.get(az) || 0) + 1);
+  }
+  const az = [...azCounts.entries()].sort((a, b) => b[1] - a[1])[0][0];
+  const f = { x: Math.sin(az * DEG), y: Math.cos(az * DEG) };
+  const c = { x: f.y, y: -f.x };
+  const items = list.map(({ o, t }) => {
+    const size = t?.size || tableSize(o, spec);
+    return {
+      id: o.id,
+      u: o.x * c.x + o.y * c.y,
+      v: o.x * f.x + o.y * f.y,
+      halfU: (size.width || o.w || 1) / 2,
+      halfV: (size.depth || o.len || 1) / 2,
+    };
+  });
+  return { az, f, c, items };
+}
+
+/** Cluster projected bases into rows along the facing axis. */
+function clusterRows(items) {
+  const avgDepth = items.reduce((a, it) => a + it.halfV * 2, 0) / items.length;
+  const rowTol = Math.max(0.4, avgDepth * 0.7);
+  const sortedV = [...items].sort((a, b) => a.v - b.v);
+  const rows = [];
+  for (const it of sortedV) {
+    const row = rows.at(-1);
+    if (!row || Math.abs(it.v - row.v) > rowTol) rows.push({ items: [it], v: it.v, halfV: it.halfV });
+    else {
+      row.items.push(it);
+      row.v = row.items.reduce((a, x) => a + x.v, 0) / row.items.length;
+      row.halfV = Math.max(row.halfV, it.halfV);
+    }
+  }
+  return rows;
+}
+
+/** Bases grouped by building with across/along projections (shared by measure + space). */
+function basesByBuilding(design, objects) {
+  const byBuilding = new Map();
+  for (const o of userBases(objects)) {
+    const t = design.tables.find((x) => x.source === o.id);
+    const key = t?.building || '_';
+    if (!byBuilding.has(key)) byBuilding.set(key, []);
+    byBuilding.get(key).push({ o, t });
+  }
+  return [...byBuilding.values()]
+    .filter((list) => list.length >= 2)
+    .map((list) => {
+      const pack = buildingBaseItems(list, design.spec);
+      return { ...pack, rows: clusterRows(pack.items) };
+    });
+}
+
+const fmtFt = (m) => `${(Math.max(0, m) * FT).toFixed(1)} ft`;
+
+/**
+ * Live gap readout for the sidebar: across (left–right along a row) and along (between rows),
+ * in feet. `hint` is a short label like "1.5–2.2 ft across · 3.0 ft along".
+ */
+export function measureBaseGaps(design) {
+  const packs = basesByBuilding(design, useStore.getState().objects);
+  if (!packs.length) return null;
+  const across = [];
+  const along = [];
+  for (const { rows } of packs) {
+    for (const row of rows) across.push(...axisGaps(row.items, (it) => it.u, (it) => it.halfU));
+    if (rows.length >= 2) along.push(...axisGaps(rows, (r) => r.v, (r) => r.halfV));
+  }
+  const a = gapStats(across);
+  const b = gapStats(along);
+  const range = (s) => (!s ? null : Math.abs(s.max - s.min) < 0.03 ? fmtFt(s.avg) : `${fmtFt(s.min)}–${fmtFt(s.max)}`);
+  const parts = [];
+  if (a) parts.push(`${range(a)} side to side`);
+  if (b) parts.push(`${range(b)} front to back`);
+  return {
+    across: a,
+    along: b,
+    acrossFt: a ? { min: a.min * FT, max: a.max * FT, avg: a.avg * FT } : null,
+    alongFt: b ? { min: b.min * FT, max: b.max * FT, avg: b.avg * FT } : null,
+    suggestedM: a?.avg ?? b?.avg ?? 0.6,
+    hint: parts.length ? parts.join(' · ') : 'No gaps to measure',
+  };
+}
+
+/**
+ * Space / align panel bases.
+ * - `gapM`: fixed edge gap in metres (omit to equalise and keep the outermost edges).
+ * - `align`: `'row'` = one horizontal line, `'column'` = one vertical line; otherwise keep the grid
+ *   and space within / between rows.
+ */
+export function spaceBases(design, { gapM, align } = {}) {
+  const s = useStore.getState();
+  if (s.readOnly) return 0;
+  if (userBases(s.objects).length < 2) {
+    toast.error('Add at least two bases to space them.');
+    return 0;
+  }
+  const packs = basesByBuilding(design, s.objects);
+  if (!packs.length) {
+    toast.error('Need at least two bases on the same building to space them.');
+    return 0;
+  }
+  const gap = gapM != null && Number.isFinite(gapM) ? Math.max(0, gapM) : undefined;
+  const moved = new Map();
+
+  for (const { f, c, items, rows: clustered } of packs) {
+    if (align === 'row') {
+      const v = items.reduce((a, it) => a + it.v, 0) / items.length;
+      for (const it of items) it.v = v;
+      distributeAlong(items, (it) => it.u, (it) => it.halfU, (it, u) => { it.u = u; }, gap);
+    } else if (align === 'column') {
+      const u = items.reduce((a, it) => a + it.u, 0) / items.length;
+      for (const it of items) it.u = u;
+      distributeAlong(items, (it) => it.v, (it) => it.halfV, (it, v) => { it.v = v; }, gap);
+    } else {
+      const rows = clustered;
+      for (const row of rows) {
+        distributeAlong(row.items, (it) => it.u, (it) => it.halfU, (it, u) => { it.u = u; }, gap);
+      }
+      if (rows.length >= 2) {
+        distributeAlong(rows, (r) => r.v, (r) => r.halfV, (r, v) => {
+          const d = v - r.v;
+          r.v = v;
+          for (const it of r.items) it.v += d;
+        }, gap);
+      }
+    }
+    for (const it of items) moved.set(it.id, { x: c.x * it.u + f.x * it.v, y: c.y * it.u + f.y * it.v });
+  }
+
+  s.set({
+    objects: s.objects.map((o) => {
+      const pos = moved.get(o.id);
+      return pos ? { ...o, x: pos.x, y: pos.y, auto: false } : o;
+    }),
+  });
+  return moved.size;
+}
+
+/** @deprecated use spaceBases — kept for older call sites */
+export const equalSpaceBases = (design, opts) => spaceBases(design, opts);
 
 /** Replace auto zones with one zone per roof section using the current defaults. */
 export function autoFillRoof(design) {

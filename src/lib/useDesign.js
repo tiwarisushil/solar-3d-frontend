@@ -109,19 +109,19 @@ export function useDesign() {
   const azimuthFor = useMemo(() => (sec) => sectionAzimuth(config, design.sections, lat, sec), [config, design.sections, lat]);
   const defaultAzimuth = useMemo(() => resolveAzimuth(config, design.sections, lat), [config, design.sections, lat]);
   const yieldModel = useMemo(() => buildYieldModel(lat, solarData), [lat, solarData]);
-  // shading is the heavy part — let it lag behind while dragging so movement stays smooth
+  // shade / structure / electrical / cost can lag a frame behind so rows·cols·rotate stay snappy
   const settled = useDeferredValue(design);
   const shade = useMemo(() => shadingLoss(settled, lat), [settled, lat]);
-  const structure = useMemo(() => computeStructure(design), [design]);
-  const structures = useMemo(() => new Map(design.buildings.map((b) => [b.id, { ...computeStructure({ ...design, tables: design.tables.filter((t) => t.building === b.id) }), pillar }])), [design, pillar]);
+  const structure = useMemo(() => computeStructure(settled), [settled]);
+  const structures = useMemo(() => new Map(settled.buildings.map((b) => [b.id, { ...computeStructure({ ...settled, tables: settled.tables.filter((t) => t.building === b.id) }), pillar }])), [settled, pillar]);
   // the inverter chosen in Products (its datasheet attributes drive the strings and the SLD), and its quantity
   const inverterPick = inverterPickOf(catalog, config);
   const invProduct = inverterPick?.product || null;
   const invQty = inverterPick?.qty || 0;
   // an on-grid system with the default site temperatures (no setting for these in the designer)
   const electrical = useMemo(
-    () => designElectricalByBuilding(design, structures, { inverterId, manual: manualStrings || [], inverterProduct: invProduct, inverterQty: invQty }),
-    [design, structures, inverterId, manualStrings, invProduct, invQty],
+    () => designElectricalByBuilding(settled, structures, { inverterId, manual: manualStrings || [], inverterProduct: invProduct, inverterQty: invQty }),
+    [settled, structures, inverterId, manualStrings, invProduct, invQty],
   );
 
   const totals = useMemo(() => {

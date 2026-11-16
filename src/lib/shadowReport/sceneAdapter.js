@@ -65,12 +65,17 @@ export const countPanelInstances = (scene) => getSolarPanelMeshes(scene).reduce(
  * parapets, raised roofs, tanks and other blocks, trees, mounting legs and rails, and the other
  * panels (inter-row shading). This is the same set the viewer's shadow map is drawn from, so the
  * numbers and the picture agree by construction.
+ * @param {THREE.Object3D} scene
+ * @param {{ excludePanels?: boolean }} [opts]  live heatmap passes excludePanels to skip the huge
+ *   panel InstancedMeshes (fast) while still hitting the same walls/trees that draw the GPU shadow
  * @returns {THREE.Object3D[]}
  */
-export function getObstacles(scene) {
+export function getObstacles(scene, opts = {}) {
   const out = [];
   scene.traverse((o) => {
-    if (o.isMesh && o.castShadow && o.visible) out.push(o);
+    if (!o.isMesh || !o.castShadow || !o.visible) return;
+    if (opts.excludePanels && o.userData?.[PANEL_MESH_TAG]) return;
+    out.push(o);
   });
   return out;
 }

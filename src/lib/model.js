@@ -382,7 +382,8 @@ export function moduleDims(spec, orientation) {
  */
 export const PATH_WIDTH = 0.6;
 /** Pathway colours, the same in 3D, on the plan and in the sidebar: between rows / between columns. */
-export const PATH_COLORS = { row: '#f59e0b', col: '#0ea5e9' };
+/** Walkway sheet colours — distinct from blue panels (row = warm deck, col = cool deck). */
+export const PATH_COLORS = { row: '#1a1a1a', col: '#1a1a1a' };
 export function pathOn(t, axis, n) {
   const p = t?.[axis === 'row' ? 'pathRow' : 'pathCol'];
   if (!p || !(n >= 2)) return null;
@@ -833,6 +834,39 @@ function expandTable(t, ctx) {
   return { ...t, rows: n.rows, cols: n.cols, grid: n.grid, poly, base, size: s, modules, legs, midLegs, joins, pathways, poleBlocks: blocks.length, vSupports: Math.max(0, lineCount(blocks[0][1] - blocks[0][0]) - 2), backLeg: t.frontLeg + s.slopeLen * sin };
 }
 
+/** Roof/obstruction fingerprint — when this is stable, unchanged array objects can reuse expandTable. */
+function expandLayoutSig(sections, spec, lat, setback, trees, blocks) {
+  return [
+    spec?.id,
+    lat,
+    setback,
+    sections.map((s) => `${s.id}:${s.height}:${s.parapetH ?? ''}:${s.poly?.length ?? 0}`).join('|'),
+    trees.map((t) => `${t.id}:${t.x}:${t.y}:${t.r ?? t.radius ?? ''}`).join('|'),
+    blocks.map((b) => `${b.id}:${b.x}:${b.y}`).join('|'),
+  ].join('~');
+}
+
+/** Cache expandTable by store object identity (WeakMap) so editing one base does not re-expand the rest. */
+const expandTableCache = new WeakMap();
+
+/** Pose a single array object the same way buildDesign does (flush plane, expand, conflict). */
+function posedArray(o, sections, spec) {
+  const sec = topSection(sections, o.x, o.y);
+  const plane = sec && planeAt(sec, o.x, o.y);
+  return plane
+    ? { ...o, ...plane, frontLeg: FLUSH_STANDOFF, flush: true, kind: 'array', source: o.id }
+    : { ...o, tilt: resolveTilt(o, spec), flush: false, kind: o.elevated ? 'elevated' : 'array', source: o.id };
+}
+
+/** Expand one array for the dock live ghost (no full buildDesign). */
+export function previewArray(obj, design) {
+  const { ctx, spec, sections } = design || {};
+  if (!ctx || !spec || !sections) return null;
+  const t = posedArray(obj, sections, spec);
+  const placement = rectPlacement(tableFootprint(t, spec), ctx, { ignoreId: t.id, inset: 0.05 });
+  return { ...expandTable(t, ctx), valid: placement.ok, reason: placement.reason };
+}
+
 /** Build everything derived from the stored design. */
 export function buildDesign({ sections: rawSections, objects, config, lat, spec: givenSpec, buildings: rawBuildings }) {
   // every section knows its building; a building's first section is its main roof
@@ -851,19 +885,29 @@ export function buildDesign({ sections: rawSections, objects, config, lat, spec:
   const blocks = objects.filter((o) => o.type === 'block');
   const ctx = { sections, spec, lat, trees, blocks, setback: config.setback, insets: new Map(), fixed: [] };
   ctx.obstaclePolys = obstaclePolys(ctx);
+  const layoutSig = expandLayoutSig(sections, spec, lat, config.setback, trees, blocks);
 
   // manual arrays first (zones flow around them)
-  const manual = objects.filter((o) => o.type === 'array').map((o) => {
-    const sec = topSection(sections, o.x, o.y);
-    const plane = sec && planeAt(sec, o.x, o.y);
-    // on a sloped roof a group always lies flush with the slope it is on, whatever tilt it was given
-    return plane ? { ...o, ...plane, frontLeg: FLUSH_STANDOFF, flush: true, kind: 'array', source: o.id } : { ...o, tilt: resolveTilt(o, spec), flush: false, kind: o.elevated ? 'elevated' : 'array', source: o.id };
-  });
-  ctx.fixed = manual.map((t) => ({ id: t.id, poly: tableFootprint(t, spec) }));
+  const manual = [];
+  for (const o of objects) {
+    if (o.type !== 'array') continue;
+    manual.push({ o, t: posedArray(o, sections, spec) });
+  }
+  ctx.fixed = manual.map(({ t }) => ({ id: t.id, poly: tableFootprint(t, spec) }));
   const tables = [];
-  for (const t of manual) {
+  for (const { o, t } of manual) {
     const placement = rectPlacement(tableFootprint(t, spec), ctx, { ignoreId: t.id, inset: 0.05 });
-    tables.push({ ...expandTable(t, ctx), valid: placement.ok, reason: placement.reason });
+    let hit = expandTableCache.get(o);
+    if (!hit || hit.sig !== layoutSig) {
+      hit = { sig: layoutSig, out: expandTable(t, ctx) };
+      expandTableCache.set(o, hit);
+    }
+    // keep the same table object when only valid/reason would change → PanelTables can reuse matrices
+    if (hit.out.valid === placement.ok && hit.out.reason === placement.reason) tables.push(hit.out);
+    else {
+      hit.out = { ...hit.out, valid: placement.ok, reason: placement.reason };
+      tables.push(hit.out);
+    }
   }
   // zones: fill, then cap to the panel limit (target capacity) before expanding
   let budget = config.maxPanels > 0 ? Math.max(0, config.maxPanels - tables.filter((t) => t.valid).reduce((a, t) => a + t.modules.length, 0)) : Infinity;
@@ -886,6 +930,84 @@ export function buildDesign({ sections: rawSections, objects, config, lat, spec:
   const modules = tables.filter((t) => t.valid).flatMap((t) => t.modules);
   const roofArea = sections.filter((s) => s.main || s.google).reduce((a, s) => a + polygonArea(s.poly), 0);
   return { sections, buildings, spec, trees, blocks, tables, modules, roofArea, ctx };
+}
+
+/**
+ * Canva-style alignment + spacing guides while dragging a base.
+ * Returns plan-space lines: `aligns` (dotted when edges/centres line up) and `gaps`
+ * (edge-to-edge distance to a neighbour that shares the same row/column band).
+ */
+export function computeDragGuides(obj, pos, design, { alignTol = 0.06, gapMax = 6 } = {}) {
+  const { tables, spec } = design;
+  if (!tables?.length) return { aligns: [], gaps: [] };
+  const size = tableSize(obj, spec);
+  const f = { x: Math.sin(obj.azimuth * DEG), y: Math.cos(obj.azimuth * DEG) };
+  const c = { x: f.y, y: -f.x };
+  const drag = {
+    u: pos.x * c.x + pos.y * c.y,
+    v: pos.x * f.x + pos.y * f.y,
+    halfU: size.width / 2,
+    halfV: size.depth / 2,
+  };
+  const at = (u, v) => ({ x: c.x * u + f.x * v, y: c.y * u + f.y * v });
+  const aligns = [];
+  const gaps = [];
+  const seenAlign = new Set();
+  const pushAlign = (axis, value, v0, v1, u0, u1) => {
+    const key = `${axis}:${value.toFixed(3)}`;
+    if (seenAlign.has(key)) return;
+    seenAlign.add(key);
+    // line runs along the other axis, spanning both boxes
+    if (axis === 'u') aligns.push({ axis, a: at(value, Math.min(v0, v1) - 0.15), b: at(value, Math.max(v0, v1) + 0.15) });
+    else aligns.push({ axis, a: at(Math.min(u0, u1) - 0.15, value), b: at(Math.max(u0, u1) + 0.15, value) });
+  };
+
+  for (const t of tables) {
+    if (t.source === obj.id || Math.abs(((t.azimuth - obj.azimuth + 540) % 360) - 180) > 2) continue;
+    const ou = t.x * c.x + t.y * c.y;
+    const ov = t.x * f.x + t.y * f.y;
+    const ohU = (t.size?.width || size.width) / 2;
+    const ohV = (t.size?.depth || size.depth) / 2;
+    const dU = [drag.u - drag.halfU, drag.u, drag.u + drag.halfU];
+    const oU = [ou - ohU, ou, ou + ohU];
+    const dV = [drag.v - drag.halfV, drag.v, drag.v + drag.halfV];
+    const oV = [ov - ohV, ov, ov + ohV];
+    const vLo = Math.min(drag.v - drag.halfV, ov - ohV);
+    const vHi = Math.max(drag.v + drag.halfV, ov + ohV);
+    const uLo = Math.min(drag.u - drag.halfU, ou - ohU);
+    const uHi = Math.max(drag.u + drag.halfU, ou + ohU);
+
+    for (const a of dU) for (const b of oU) if (Math.abs(a - b) < alignTol) pushAlign('u', (a + b) / 2, vLo, vHi, uLo, uHi);
+    for (const a of dV) for (const b of oV) if (Math.abs(a - b) < alignTol) pushAlign('v', (a + b) / 2, vLo, vHi, uLo, uHi);
+
+    // side-to-side gap when the two bases share a front/back band
+    const vOverlap = Math.min(drag.v + drag.halfV, ov + ohV) - Math.max(drag.v - drag.halfV, ov - ohV);
+    if (vOverlap > -0.25) {
+      const left = drag.u < ou
+        ? { dist: (ou - ohU) - (drag.u + drag.halfU), aU: drag.u + drag.halfU, bU: ou - ohU }
+        : { dist: (drag.u - drag.halfU) - (ou + ohU), aU: ou + ohU, bU: drag.u - drag.halfU };
+      if (left.dist > 0.02 && left.dist < gapMax) {
+        const midV = (Math.max(drag.v - drag.halfV, ov - ohV) + Math.min(drag.v + drag.halfV, ov + ohV)) / 2;
+        const a = at(left.aU, midV);
+        const b = at(left.bU, midV);
+        gaps.push({ axis: 'u', dist: left.dist, a, b, mid: { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 } });
+      }
+    }
+    // front-to-back gap when they share a left/right band
+    const uOverlap = Math.min(drag.u + drag.halfU, ou + ohU) - Math.max(drag.u - drag.halfU, ou - ohU);
+    if (uOverlap > -0.25) {
+      const front = drag.v < ov
+        ? { dist: (ov - ohV) - (drag.v + drag.halfV), aV: drag.v + drag.halfV, bV: ov - ohV }
+        : { dist: (drag.v - drag.halfV) - (ov + ohV), aV: ov + ohV, bV: drag.v - drag.halfV };
+      if (front.dist > 0.02 && front.dist < gapMax) {
+        const midU = (Math.max(drag.u - drag.halfU, ou - ohU) + Math.min(drag.u + drag.halfU, ou + ohU)) / 2;
+        const a = at(midU, front.aV);
+        const b = at(midU, front.bV);
+        gaps.push({ axis: 'v', dist: front.dist, a, b, mid: { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 } });
+      }
+    }
+  }
+  return { aligns, gaps };
 }
 
 /**
